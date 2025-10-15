@@ -719,13 +719,28 @@ def _dedup_inter(files, min_len=6, sim_threshold=0.85):
                 })
     return exact, sims
 
-# ================== Flask ==================
+# ==================== Flask ====================
+from flask import Flask
+from flask_cors import CORS
+import re
+
 app = Flask(__name__)
-CORS(app,
-     resources={r"/*": {"origins": "*"}},
-     allow_headers=["Content-Type", "Authorization"],
-     expose_headers=["Content-Type"],
-     supports_credentials=False)
+
+ALLOWED_ORIGINS = [
+    "https://glefit-frontend.vercel.app",   # 프로덕션(필요시 실제 프로젝트 도메인으로 교체)
+    re.compile(r"https://.*\.vercel\.app"), # 프리뷰 배포 전부 허용  ← 점(.) 이스케이프 필수!
+    "http://localhost:3000",                # 로컬
+    "https://nuttern-running-aggregate-insights.trycloudflare.com",  # 터널 주소
+]
+
+CORS(
+    app,
+    resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    supports_credentials=True,
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
