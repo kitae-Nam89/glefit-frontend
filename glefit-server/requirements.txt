@@ -1,0 +1,10 @@
+flask
+flask-cors
+python-dotenv
+pyjwt
+passlib[bcrypt]
+openai
+pyyaml
+symspellpy
+gunicorn
+uvicorn

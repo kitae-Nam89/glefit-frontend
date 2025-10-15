@@ -1,0 +1,36 @@
+# React/Node
+node_modules/
+build/
+npm-debug.log*
+yarn-*.log
+*.log
+.env
+.env.*
+
+# Python (절대 올리지 말 것)
+venv/
+.venv/
+Lib/
+Include/
+Scripts/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+*.arrow
+*.seg
+*.bin
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 서버 쪽(있다면)
+glefit-server/venv/
+glefit-server/.venv/
+glefit-server/Lib/
+glefit-server/Include/
+glefit-server/__pycache__/

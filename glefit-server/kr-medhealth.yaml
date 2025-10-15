@@ -1,0 +1,3373 @@
+pack: kr-adcompliance-merged
+version: 2025-09-14-merge-v1
+topics:
+- 가격/비교(심화)
+- 건강기기/웰니스
+- 건강기능식품
+- 건강기능식품(추가)
+- 공통광고
+- 공통광고(심화)
+- 교육/취업
+- 금융/가격표현
+- 다이어트/피트니스
+- 부동산
+- 시술/미용
+- 식품위생
+- 의료
+- 의료(추가)
+- 화장품
+rules:
+- id: ABSOLUTE-CLAIMS-A
+  topic: 공통광고
+  severity: block
+  rationale: 절대·보장성 표현
+  legal_ref: 표시·광고의 공정화에 관한 법률 제3조(부당한 표시·광고 금지)
+  actions:
+  - suggest:GEN_SAFE_ALT
+  except_window: 16
+  except:
+    any:
+    - (아니|아닙|아닐|불가|불가능|보장되지 않|단정할 수 없)
+  patterns:
+    any:
+    - type: keyword
+      value: 100% 치료
+      spacing_agnostic: true
+    - type: keyword
+      value: 무조건 효과
+      spacing_agnostic: true
+    - type: keyword
+      value: 반드시 효과
+      spacing_agnostic: true
+    - type: keyword
+      value: 확실한 효과
+      spacing_agnostic: true
+    - type: keyword
+      value: 완치
+      spacing_agnostic: true
+    - type: keyword
+      value: 전액보장
+      spacing_agnostic: true
+    - type: keyword
+      value: 평생보장
+      spacing_agnostic: true
+    - type: regex
+      value: (반드시|무조건|확실(?:히)?)\\s*.{0,8}\\s*(치료|개선|효과)
+    - type: regex
+      value: (치료|개선|효과)\\s*.{0,8}\\s*(보장|보증|담보)
+    - type: regex
+      value: (영구|평생)\\s*.{0,6}\\s*(치료|개선|유지|효과)
+- id: INSTANT-FAST-A
+  topic: 공통광고
+  severity: block
+  rationale: 즉시/당일/한 번에 등 시간 과장
+  legal_ref: 공정위 고시 『표시·광고 심사지침』(시간·기간 오인 유발)
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: keyword
+      value: 즉시 효과
+      spacing_agnostic: true
+    - type: keyword
+      value: 즉각 효과
+      spacing_agnostic: true
+    - type: keyword
+      value: 당일 효과
+      spacing_agnostic: true
+    - type: keyword
+      value: 한 번에 해결
+      spacing_agnostic: true
+    - type: phrase
+      terms:
+      - 즉시
+      - 효과
+      max_gap: 8
+    - type: phrase
+      terms:
+      - 바로
+      - 개선
+      max_gap: 8
+    - type: regex
+      value: (즉시|즉각|당일|단번에|한번에)\\s*.{0,6}\\s*(해결|치료|개선|완화)
+- id: NO-PAIN-NO-DOWN-A
+  topic: 공통광고
+  severity: block
+  rationale: 무통/무부작용/다운타임 없음 과장
+  legal_ref: 공정위 고시 『표시·광고 심사지침』(안전성·부작용 은폐 금지)
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: keyword
+      value: 무통
+      spacing_agnostic: true
+    - type: keyword
+      value: 통증 없음
+      spacing_agnostic: true
+    - type: keyword
+      value: 부작용 없음
+      spacing_agnostic: true
+    - type: keyword
+      value: 다운타임 없음
+      spacing_agnostic: true
+    - type: regex
+      value: (통증|부작용)\\s*.{0,3}\\s*(없음|제로|0\\s*퍼센트|zero|無)
+    - type: regex
+      value: (회복기간|다운타임)\\s*.{0,3}\\s*(없음|無|제로)
+- id: SUPERLATIVE-RANKING-A
+  topic: 공통광고
+  severity: warn
+  rationale: 우월·비교 표현(근거 필요)
+  legal_ref: 공정위 『부당 비교·우월성 광고 가이드라인』
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: keyword
+      value: 국내 1위
+      spacing_agnostic: true
+    - type: keyword
+      value: No.1
+      spacing_agnostic: true
+    - type: keyword
+      value: 최고
+      spacing_agnostic: true
+    - type: keyword
+      value: 최상급
+      spacing_agnostic: true
+    - type: regex
+      value: (타사|경쟁사|타제품|동종업계)\\s*.{0,8}\\s*(대비|보다|우위|우수)
+    - type: regex
+      value: (압도적|월등|탁월)(?:한|으로)
+- id: TESTIMONIAL-BEFORE-AFTER-A
+  topic: 공통광고
+  severity: warn
+  rationale: 후기/전후사진(객관성/재현성 문제)
+  legal_ref: 공정위 『체험담·후기 광고 심사지침』
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: keyword
+      value: 전후사진
+      spacing_agnostic: true
+    - type: regex
+      value: (Before\\s*\\/?\\s*After|비포\\s*\\/\\s*애프터)
+    - type: regex
+      value: (환자|고객|사용자).{0,4}(후기|사례|리뷰)
+- id: MED-ABSOLUTE-A
+  topic: 의료
+  severity: block
+  rationale: 의학적 효능 단정·보장 금지
+  legal_ref: 의료법 제56조(의료광고) 및 보건복지부 고시 『의료광고 심의기준』
+  actions:
+  - suggest:MED_SAFE_ALT
+  except_window: 18
+  except:
+    any:
+    - (치료\s*되지 않|치료.*아님|보장되지 않|효과가 아닐 수 있)
+    - (의학적 근거 필요|개인차가 있)
+  patterns:
+    any:
+    - type: keyword
+      value: 완치
+      spacing_agnostic: true
+    - type: phrase
+      terms:
+      - 반드시
+      - 치료
+      max_gap: 8
+    - type: phrase
+      terms:
+      - 확실히
+      - 개선
+      max_gap: 8
+    - type: regex
+      value: 치료\\s*(합니?다|돼요|됩니다|하세요|해드립니다|받으세요)
+- id: MED-NOSIDE-NORISK-A
+  topic: 의료
+  severity: block
+  rationale: 무부작용/무위험 단정 금지
+  legal_ref: 의료법 제56조, 의료광고 심의기준(안전성·부작용 은폐 금지)
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: keyword
+      value: 부작용 없음
+      spacing_agnostic: true
+    - type: regex
+      value: (합병증|부작용|재발)\\s*.{0,4}\\s*(없음|제로|0\\s*퍼센트|無|zero)
+- id: MED-PAIN-TIME-A
+  topic: 의료
+  severity: warn
+  rationale: 무통/즉시·당일 호전 과장
+  legal_ref: 의료광고 심의기준(효과·기간 단정 표현 주의)
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: keyword
+      value: 무통치료
+      spacing_agnostic: true
+    - type: phrase
+      terms:
+      - 즉시
+      - 호전
+      max_gap: 6
+    - type: phrase
+      terms:
+      - 당일
+      - 개선
+      max_gap: 6
+    - type: regex
+      value: (통증)\\s*.{0,3}\\s*(없이|없이도|無)
+- id: MED-COMPETENCE-RANK-A
+  topic: 의료
+  severity: warn
+  rationale: 의료인 평가·우월성·비교광고 제한
+  legal_ref: 의료법 제56조, 의료광고 심의기준(우월성·비교 금지)
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|교수|원장)\\s*.{0,6}\\s*(1위|최고|최다|No\\.?1)
+    - type: regex
+      value: (타원|타병원|타의원)\\s*.{0,6}\\s*(대비|보다|우위)
+- id: MED-PROCEDURE-RISK-DISCLOSURE
+  topic: 의료
+  severity: warn
+  rationale: 시술·수술 관련 위험 고지 필요
+  legal_ref: 의료광고 심의기준(위험·부작용 고지 의무)
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (시술|수술|치료)\\s*.{0,8}\\s*(간단|쉬움|안전)
+    - type: regex
+      value: (마취|출혈|감염|흉터|부종|멍|통증)
+- id: HFS-DISEASE-CLAIM-A
+  topic: 건강기능식품
+  severity: block
+  rationale: 질병의 치료·예방·경감 표방 금지
+  legal_ref: 건강기능식품법 제18조, 식품표시광고법 제8조
+  actions:
+  - suggest:HFS_ALLOWABLE_CLAIM
+  patterns:
+    any:
+    - type: regex
+      value: (질병|병|질환)\\s*.{0,4}\\s*(치료|완치|예방|경감|치유)
+    - type: regex
+      value: (당뇨|고혈압|암|아토피|우울증|관절염|치매)\\s*.{0,2}\\s*(치료|완치|개선)
+    - type: phrase
+      terms:
+      - 의약품
+      - 수준
+      max_gap: 2
+    - type: regex
+      value: 의약품(?:으로|급|\\s*수준|과\\s*동등)
+- id: HFS-ABSOLUTE-A
+  topic: 건강기능식품
+  severity: warn
+  rationale: 기능성 과장·절대표현
+  legal_ref: 식약처 『건강기능식품 표시·광고 가이드』
+  actions:
+  - suggest:HFS_MODERATE
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 반드시
+      - 효과
+      max_gap: 6
+    - type: phrase
+      terms:
+      - 무조건
+      - 개선
+      max_gap: 6
+    - type: keyword
+      value: 부작용 없음
+      spacing_agnostic: true
+    - type: regex
+      value: (하루\\s*1정|1회\\s*복용)\\s*.{0,6}\\s*(완치|치유|치료)
+- id: HFS-MISLEADING-AUTHORITY
+  topic: 건강기능식품
+  severity: warn
+  rationale: 권위 도용/과장(승인=효능 아님)
+  legal_ref: 식약처 고시 『표시·광고 실증제도』
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (식약처|식품의약품안전처|MFDS|KFDA|FDA)\\s*.{0,8}\\s*(승인|인증)\\s*.{0,8}\\s*(보장|확실|보증)
+    - type: regex
+      value: (임상|시험|실험)\\s*.{0,8}\\s*(보장|확실)
+- id: FOOD-MEDICINAL-A
+  topic: 식품위생
+  severity: block
+  rationale: 일반식품의 치료·예방 표방 금지
+  legal_ref: 식품표시광고법 제8조, 식품위생법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (치료|완치|치유|예방)\\s*.{0,6}\\s*(된다|됩니다|가능|보장)
+    - type: regex
+      value: (통증|염증|부종)\\s*.{0,4}\\s*(제거|없애|해소|근절)
+    - type: phrase
+      terms:
+      - 약과
+      - 동일
+      max_gap: 2
+    - type: phrase
+      terms:
+      - 의약품
+      - 같은
+      - 효과
+      max_gap: 4
+- id: COSMETIC-MEDICAL-CLAIM
+  topic: 화장품
+  severity: warn
+  rationale: 화장품에서 치료·치유·재생 단정 표현 주의
+  legal_ref: 화장품법, 식약처 화장품 효능표현 가이드
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: 피부\\s*.{0,6}\\s*(재생|치유|치료)
+    - type: regex
+      value: (주름|미백|탄력)\\s*.{0,6}\\s*(치료|완치|개선 보장)
+    - type: phrase
+      terms:
+      - 의학적
+      - 효과
+      max_gap: 4
+- id: AESTHETIC-PROCEDURE-ABSOLUTE
+  topic: 시술/미용
+  severity: warn
+  rationale: 미용시술 무통/즉시/보장 표현
+  legal_ref: 의료법 제56조, 의료광고 심의기준(미용시술 포함)
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: regex
+      value: (시술|리프팅|주사|보톡스|필러)\\s*.{0,8}\\s*(즉시|당일|바로)\\s*.{0,6}\\s*(효과|개선)
+    - type: regex
+      value: (흉터|멍|부기|붓기)\\s*.{0,6}\\s*(없음|제로|無)
+- id: PRICE-BAIT
+  topic: 금융/가격표현
+  severity: warn
+  rationale: 가격/혜택 보장 과장
+  legal_ref: 표시·광고의 공정화법, 금융광고 준칙
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (평생|영구)\\s*.{0,4}\\s*(무료|무상|보장)
+    - type: regex
+      value: 전액\\s*.{0,4}\\s*(환불|보상)\\s*.{0,6}\\s*(보장|약속)
+- id: STRONG-MODALS-ULTRA
+  topic: 공통광고
+  severity: warn
+  rationale: ‘확실/반드시/무조건/필수/항상/절대’ 등 강제·단정
+  legal_ref: 공정위 표시·광고 심사지침(과장·기만 우려)
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: keyword
+      value: 확실
+      spacing_agnostic: true
+    - type: keyword
+      value: 반드시
+      spacing_agnostic: true
+    - type: keyword
+      value: 무조건
+      spacing_agnostic: true
+    - type: keyword
+      value: 필수
+      spacing_agnostic: true
+    - type: regex
+      value: (절대|항상)\\s*.{0,3}\\s*(해야|하셔야|필요|권장)
+- id: MULTI-LINGUAL-ZERO
+  topic: 공통광고
+  severity: warn
+  rationale: 다국어 ‘제로/無/zero’ 식 과장
+  legal_ref: 공정위 표시·광고 심사지침
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (zero|ZERO|無|ゼロ)\\s*.{0,4}\\s*(부작용|통증|위험)
+    - type: regex
+      value: (副作用)\\s*.{0,4}\\s*(無し|ゼロ)
+- id: EXCEPT-GUIDE-SENTENCE
+  topic: 공통광고
+  severity: warn
+  rationale: 주의/가이드 문장(부정 문맥)은 제외
+  legal_ref: 공정위 심사지침(부정·주의 고지 문장 보호)
+  actions:
+  - suggest:GEN_SOFTEN
+  except_window: 24
+  except:
+    any:
+    - (~하지 않습니다|아닙니다|권장하지 않|보장되지 않|단정할 수 없|아닐 수 있)
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 효과
+      - 개인차
+      max_gap: 6
+    - type: phrase
+      terms:
+      - 부작용
+      - 발생
+      - 가능
+      max_gap: 6
+- id: MED-OVERCLAIM-CONTEXT-A
+  topic: 의료
+  severity: block
+  rationale: 절대표현(완벽/완전/100%/절대) + 치료·효과·보장·회복 맥락 결합
+  legal_ref: 의료법 제56조, 의료광고 심의기준
+  actions:
+  - suggest:MED_SAFE_ALT
+  except_window: 18
+  except:
+    any:
+    - (보장되지 있?않|단정할 수 없|개인차|권장하지 않|아닐 수 있)
+  patterns:
+    any:
+    - type: regex
+      value: (완벽|완전|절대|100\\s*퍼센트|100%)\\s*.{0,14}\\s*(치료|효과|회복|보장|개선|치유)
+      flags: i
+    - type: regex
+      value: (치료|효과|회복|보장|개선|치유)\\s*.{0,14}\\s*(완벽|완전|절대|100\\s*퍼센트|100%)
+      flags: i
+    - type: regex
+      value: (완벽|완전|절대)\\s*.{0,10}\\s*(보장|보증|담보|확약)
+    - type: regex
+      value: (영구|평생)\\s*.{0,8}\\s*(유지|효과|보장|지속)
+    - type: regex
+      value: 재발(률)?\\s*(0|제로|無)
+- id: MED-INSTANT-EFFECT-A
+  topic: 의료
+  severity: warn
+  rationale: 즉시·단번·바로 효과 고정 표현(과장 위험)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: regex
+      value: (즉시|단번에|바로)\\s*.{0,8}\\s*(효과|개선|회복|통증\\s*완화)
+- id: MED-NO-SIDE-EFFECTS
+  topic: 의료
+  severity: block
+  rationale: 부작용/통증/흉터/출혈 등 위험요소 전면 부정
+  legal_ref: 의료법 제56조, 의료광고 심의기준(안전성 은폐 금지)
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (부작용|통증|흉터|출혈|부종)\\s*.{0,6}\\s*(없음|제로|전혀|0)
+    - type: phrase
+      terms:
+      - 부작용
+      - 걱정
+      - 없
+      max_gap: 6
+- id: MED-COMPARATIVE-SUPERIORITY
+  topic: 의료
+  severity: warn
+  rationale: 비교·우월·최상급(타기관 대비, 업계 최고 등) 근거 요구
+  legal_ref: 의료광고 심의기준(비교·우월성 제한)
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (타(병원|의원)|다른\\s*(병원|의원|기관|시술))\\s*.{0,8}\\s*(보다|대비)\\s*.{0,8}\\s*(우수|우월|더\\s*낫|최고|1위)
+    - type: regex
+      value: (업계|지역|국내|세계)\\s*.{0,6}\\s*(최고|1위|유일|압도)
+- id: MED-TESTIMONIAL-NUMERIC-A
+  topic: 의료
+  severity: warn
+  rationale: 수치·사례 과장(근거·출처 요구)
+  legal_ref: 의료광고 심의기준(실증·객관적 근거 필요)
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (\\d{1,3})\\s*%\\s*(개선|만족|완치|효과|성공)
+    - type: regex
+      value: (10명\\s*중\\s*9명|대부분의\\s*환자|거의\\s*모든\\s*환자)\\s*.{0,10}\\s*(완치|완전\\s*회복|통증\\s*소실)
+    - type: regex
+      value: 임상\\s*.{0,10}\\s*(보장|확실|입증)
+- id: MED-BEFORE-AFTER-IMPLY
+  topic: 의료
+  severity: warn
+  rationale: 극적인 전후 대비/사진 표현 오인 소지
+  legal_ref: 의료광고 심의기준(전후사진 일반화 금지)
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 시술 전
+      - 시술 후
+      max_gap: 12
+    - type: regex
+      value: (전후|before\\s*/\\s*after)
+      flags: i
+- id: COSM-INSTANT-NO-SCAR
+  topic: 미용/피부
+  severity: warn
+  rationale: 즉시/하루만에/흉터없이/통증없이 등 과장 경향
+  legal_ref: 의료법 제56조, 의료광고 심의기준
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: regex
+      value: (즉시|하루만에|바로)\\s*.{0,10}\\s*(개선|효과|변화)
+    - type: regex
+      value: (무통|무통증|흉터\\s*없|흉터\\s*제로)
+- id: HFS-MEDICAL-CLAIM
+  topic: 건기식/식품
+  severity: block
+  rationale: 식품/건기식에서 치료·완치·의학적 효능 표방
+  legal_ref: 식품표시광고법 제8조, 건강기능식품법 제18조
+  actions:
+  - suggest:HFS_NEUTRAL_CLAIM
+  patterns:
+    any:
+    - type: regex
+      value: (식품|음료|건기식|보조제)\\s*.{0,12}\\s*(치료|완치|낫게|의학적\\s*효과|의약품)
+    - type: phrase
+      terms:
+      - 식품
+      - 효과
+      - 보장
+      max_gap: 10
+- id: GENERIC-ABSOLUTE-WORDS
+  topic: 공통광고
+  severity: warn
+  rationale: 맥락 없이 쓰인 완벽/완전/절대 등은 과잉 차단 방지 차원에서 주의
+  legal_ref: 공정위 표시·광고 심사지침
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: keyword
+      value: 완벽
+      spacing_agnostic: true
+    - type: keyword
+      value: 완전
+      spacing_agnostic: true
+    - type: keyword
+      value: 절대
+      spacing_agnostic: true
+    - type: regex
+      value: 100\\s*퍼센트|100%
+      flags: i
+- id: MED-LATEST-TECH-CLAIM
+  topic: 의료
+  severity: warn
+  rationale: 최신/첨단 장비·기법 표현은 근거 필요
+  legal_ref: 의료광고 심의기준(장비·기술 우월성 표현)
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: keyword
+      value: 최신
+      spacing_agnostic: true
+    - type: regex
+      value: (첨단|최고급|신형)\\s*(장비|기술|기법)
+- id: MED-SPECIALIST-CLAIM
+  topic: 의료
+  severity: warn
+  rationale: 전문·전문가·전문의 용어 남용 주의
+  legal_ref: 의료법, 의료광고 심의기준(전문의 표방 제한)
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (전문)(의|병원|클리닉|센터|진료)
+    - type: keyword
+      value: 전문가
+      spacing_agnostic: true
+- id: MED-RELAPSE-CLAIM
+  topic: 의료
+  severity: block
+  rationale: 재발률 0%·재발 없음 등 과장 금지
+  legal_ref: 의료광고 심의기준(효과·재발 단정 금지)
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: 재발률\\s*(0|제로|없음|無)
+    - type: regex
+      value: 재발\\s*(없음|제로|無|전혀)
+    - type: regex
+      value: 재발률\\s*\\d+%
+- id: MED-RELAPSE-107
+  topic: 의료
+  severity: block
+  rationale: 재발 없음·재발 없이 등 확정 표현 금지
+  legal_ref: 의료광고 심의기준(재발 단정 금지)
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 재발
+      - 없
+      max_gap: 3
+    - type: phrase
+      terms:
+      - 재발
+      - 없이
+      max_gap: 3
+    - type: regex
+      value: 재발률.{0,8}(거의|매우|사실상).{0,4}없
+- id: MED-COMPARATIVE-108
+  topic: 의료
+  severity: warn
+  rationale: 타 병원 대비 우월·비방 비교 표현 주의
+  legal_ref: 의료광고 심의기준(비교·우월성 제한)
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 타
+      - 병원
+      max_gap: 2
+    - type: phrase
+      terms:
+      - 다른
+      - 병원과
+      - 달리
+      max_gap: 4
+    - type: phrase
+      terms:
+      - 타
+      - 병원
+      - 실패
+      max_gap: 8
+    - type: regex
+      value: (타|다른)\\s?병원.{0,20}(실패|못|불가|어려웠)
+- id: MED-RESULT-109
+  topic: 의료
+  severity: warn
+  rationale: ‘좋은 결과/만족도 매우 높음’ 등 성과 과장·일반화 표현 주의
+  legal_ref: 의료광고 심의기준(성과 일반화·보장 금지)
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 좋은
+      - 결과
+      max_gap: 6
+    - type: phrase
+      terms:
+      - 만족도
+      - 높
+      max_gap: 6
+    - type: regex
+      value: 만족도.{0,8}(매우|아주|가장|최고).{0,2}높
+- id: MED-SPEED-110
+  topic: 의료
+  severity: warn
+  rationale: ‘빠르게 치료/신속 치료’ 등 기간·속도 단정 주의
+  legal_ref: 의료광고 심의기준(기간 단정 표현 주의)
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 빠르게
+      - 치료
+      max_gap: 6
+    - type: phrase
+      terms:
+      - 신속
+      - 치료
+      max_gap: 6
+    - type: regex
+      value: (단숨|즉각|순식간).{0,6}(치료|완화|개선)
+- id: MED-EXPERT-111
+  topic: 의료
+  severity: warn
+  rationale: 전문 의료진/의료 장비로 우월·과장 표현 주의
+  legal_ref: 의료광고 심의기준(전문의·장비 우월성 표현)
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 전문
+      - 의료진
+      max_gap: 4
+    - type: phrase
+      terms:
+      - 의료
+      - 장비
+      max_gap: 4
+    - type: phrase
+      terms:
+      - 첨단
+      - 의료
+      - 장비
+      max_gap: 6
+    - type: regex
+      value: (전문(가|팀)|스페셜리스트).{0,10}(치료|시술|수술)
+- id: AD-TESTIMONIAL-006B
+  topic: 공통
+  severity: warn
+  rationale: 후기·리뷰 다수/품질 단정 일반화는 오인 유발
+  legal_ref: 공정위 체험담 광고 지침
+  patterns:
+    any:
+    - type: regex
+      value: (후기|리뷰|평가).{0,8}(많(습니다|아요)|매우\\s?많|폭주|쏟아지|넘쳐)
+    - type: regex
+      value: (후기|리뷰).{0,12}(확실히|정말|완전|뚜렷하게).{0,8}(좋아졌|개선|호전)
+- id: AD-IMPROVE-009
+  topic: 공통
+  severity: warn
+  rationale: ‘증상이 확실히 좋아졌다’ 등 효과 확정/강화 표현
+  legal_ref: 공정위 표시·광고 심사지침
+  patterns:
+    any:
+    - type: regex
+      value: (증상|상태|통증|기침|발열|피로).{0,10}(확실히|분명히|뚜렷하게|눈에\\s?띄게).{0,8}(좋아졌|호전|개선(되었|됨|됐다)|나아졌)
+- id: MED-INSTITUTION-CTA-112
+  topic: 의료
+  severity: block
+  rationale: 특정 병원명·기관과 결합된 처방/상담 권유는 광고로 간주
+  legal_ref: 의료법 제56조, 의료광고 심의기준(직접적 진료·예약 유도 금지)
+  patterns:
+    any:
+    - type: regex
+      value: (병원|의원|한방병원|한의원|클리닉|센터)[^\\n]{0,25}(처방|상담|진료|치료)[^\\n]{0,10}(받아보세요|권합니다|추천드립니다|예약하세요|신청하세요)
+    - type: regex
+      value: 처방을\\s?받아보세요
+  except:
+    any:
+    - (가까운|인근|지역의)\s?(병의원|의료기관|보건소).{0,12}(상담|진료)
+  except_window: 32
+- id: MFDS-DISEASE-CLAIM-01
+  topic: 건강기능식품
+  severity: block
+  rationale: 질병의 치료·예방·경감 표방 금지(건기식)
+  legal_ref: 건강기능식품법 제18조, 식품표시광고법 제8조
+  actions:
+  - suggest:HFS_ALLOWABLE_CLAIM
+  except_window: 20
+  except:
+    any:
+    - (보장되지 않|단정할 수 없|개인차|권장하지 않|아닐 수 있)
+  patterns:
+    any:
+    - type: regex
+      value: (질병|질환|병)\\s*.{0,6}\\s*(치료|완치|치유|예방|경감|개선)
+    - type: regex
+      value: (당뇨|고혈압|고지혈증|치매|우울증|아토피|천식|관절염)\\s*.{0,4}\\s*(치료|완치|개선)
+    - type: phrase
+      terms:
+      - 의약품
+      - 수준
+      max_gap: 2
+    - type: regex
+      value: 의약품(?:으로|급|\\s*수준|과\\s*동등)
+- id: MFDS-MISLEAD-AUTHORITY-02
+  topic: 건강기능식품
+  severity: warn
+  rationale: 승인/인증을 효과로 오인 유도 금지
+  legal_ref: 식약처 표시·광고 실증제도
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (식약처|식품의약품안전처|MFDS|KFDA|FDA)\\s*.{0,10}\\s*(승인|인증|허가)\\s*.{0,10}\\s*(보장|확실|보증)
+    - type: regex
+      value: (임상|시험|실험)\\s*.{0,8}\\s*(보장|확실|완벽)
+- id: MFDS-ABSOLUTE-03
+  topic: 건강기능식품
+  severity: warn
+  rationale: 절대/보장성 기능 표현
+  legal_ref: 식약처 가이드(기능성 과장 금지)
+  actions:
+  - suggest:HFS_MODERATE
+  patterns:
+    any:
+    - type: regex
+      value: (반드시|무조건|확실히)\\s*.{0,6}\\s*(효과|개선|치유)
+    - type: regex
+      value: (하루\\s*1정|1회\\s*복용)\\s*.{0,8}\\s*(완치|치유|치료)
+    - type: keyword
+      value: 부작용 없음
+      spacing_agnostic: true
+- id: MFDS-FOOD-MEDICINAL-04
+  topic: 식품위생
+  severity: block
+  rationale: 일반식품의 의약적 효능 표방 금지
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (치료|완치|치유|예방)\\s*.{0,8}\\s*(된다|됩니다|가능|보장)
+    - type: regex
+      value: (통증|염증|부종|감염|출혈)\\s*.{0,6}\\s*(개선|완화|사라짐)
+- id: MFDS-COSMETIC-05
+  topic: 화장품
+  severity: warn
+  rationale: 화장품에서 의약적 효능·질환 개선 표방 금지
+  legal_ref: 화장품법, 식약처 효능표현 가이드
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (아토피|여드름|기미|주근깨|주사)\\s*.{0,6}\\s*(치료|치유|완치)
+    - type: regex
+      value: (재생|재건|재형성)\\s*.{0,6}\\s*(치료|수술)
+- id: FTC-ABSOLUTE-CLAIM-01
+  topic: 공통광고
+  severity: block
+  rationale: 기만·과장·절대적 효능/우월성 표현 금지
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  except_window: 16
+  except:
+    any:
+    - (아니|아닙|불가|불가능|보장되지 않|단정할 수 없)
+  patterns:
+    any:
+    - type: regex
+      value: (100%|100\\s*퍼센트|절대|완벽|무조건)\\s*.{0,8}\\s*(효과|개선|보장)
+    - type: regex
+      value: (최고|업계\\s*1위|국내\\s*1위|유일|독보적)\\b
+    - type: phrase
+      terms:
+      - 타사
+      - 대비
+      max_gap: 1
+- id: FTC-PRICE-COMPARATIVE-02
+  topic: 금융/가격표현
+  severity: warn
+  rationale: 가격·혜택 비교 시 근거 없는 우월성/부당 비교 금지
+  legal_ref: 표시·광고의 공정화법, 금융감독원 광고 준칙
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (최저가|전국가|역대급)\\s*(보장|약속)
+    - type: regex
+      value: (타사|경쟁사)\\s*.{0,4}\\s*(보다|대비)\\s*.{0,4}\\s*(싸다|저렴|우수|효과적)
+- id: FTC-FREE-GUARANTEE-03
+  topic: 공통광고
+  severity: warn
+  rationale: ‘무료/무상/전액 환불 보장’ 과장·기만
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (무료|무상)\\s*.{0,6}\\s*(보장|보증|약속)
+    - type: regex
+      value: 전액\\s*.{0,6}\\s*(환불|보상)\\s*.{0,8}\\s*(보장|약속)
+- id: FSS-PRINCIPAL-GUAR-01
+  topic: 금융/가격표현
+  severity: block
+  rationale: 원금/수익 보장, 위험 은폐 금지
+  legal_ref: 금융감독원 금융광고 심사규정
+  actions:
+  - suggest:GEN_SAFE_ALT
+  except_window: 20
+  except:
+    any:
+    - (원금이 보장되지 않|손실 발생 가능|투자에는 손실이 따를 수 있)
+  patterns:
+    any:
+    - type: regex
+      value: (원금|수익)\\s*.{0,6}\\s*(보장|보증|확실|담보)
+    - type: regex
+      value: (무위험|노리스크|손실\\s*없음)
+    - type: regex
+      value: (과거\\s*수익|백테스트)\\s*.{0,8}\\s*(장래|미래)\\s*.{0,6}\\s*(보장|보증)
+- id: FSS-PROJECTION-02
+  topic: 금융/가격표현
+  severity: warn
+  rationale: 과도한 수익률 제시/미래성과 보장 오인
+  legal_ref: 금융감독원 금융광고 심사규정
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (연\\s*\\d{1,3}%|월\\s*\\d{1,3}%)\\s*.{0,6}\\s*(확정|보장|보증)
+    - type: regex
+      value: (단기간|단숨|즉시)\\s*.{0,6}\\s*(수익|부자|대박)
+- id: FSS-RISK-DISCLOSURE-03
+  topic: 금융/가격표현
+  severity: warn
+  rationale: 중요 위험요인 미고지·축소
+  legal_ref: 금융감독원 금융광고 심사규정
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (파생|레버리지|선물|옵션)\\s*.{0,12}\\s*(안전|무위험)
+    - type: regex
+      value: (신용|마진|빚투)\\s*.{0,12}\\s*(안전|보장)
+- id: KCSC-OBSCENE-01
+  topic: 공통광고
+  severity: block
+  rationale: 선정성·음란성·과도한 신체노출 표현 금지
+  legal_ref: 방송통신심의위원회 정보통신에 관한 심의규정
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: regex
+      value: (선정적|음란|노골적|19금)
+    - type: regex
+      value: (가슴|엉덩이|노출)\\s*.{0,6}\\s*(직접\\s*노출|강조)
+- id: KCSC-VIOLENCE-02
+  topic: 공통광고
+  severity: warn
+  rationale: 폭력성·자극적/혐오·비속어 표현 금지
+  legal_ref: 방심위 심의규정
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: regex
+      value: (폭력|살해|학대|자해|혐오|증오)
+    - type: regex
+      value: (비속어|욕설|모욕)
+- id: KCSC-ILLEGAL-03
+  topic: 공통광고
+  severity: block
+  rationale: 불법/탈법 행위 조장·연상 금지
+  legal_ref: 방심위 심의규정, 형법·성매매처벌법 등 관련 법령
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (불법\\s*도박|불법\\s*사이트|토토|성매매)
+    - type: regex
+      value: (불법\\s*의료|무면허\\s*시술|불법\\s*약물)
+- id: MED-OVERCLAIM-01
+  topic: 의료
+  severity: block
+  rationale: 완치/보장/절대 표현과 치료 맥락 결합
+  legal_ref: 의료법 제56조, 의료광고 심의기준
+  actions:
+  - suggest:MED_SAFE_ALT
+  except_window: 18
+  except:
+    any:
+    - (보장되지 않|단정할 수 없|개인차|권장하지 않|아닐 수 있)
+  patterns:
+    any:
+    - type: regex
+      value: (완치|완벽|절대|100%|100\\s*퍼센트)\\s*.{0,12}\\s*(치료|효과|회복|보장|개선|치유)
+      flags: i
+    - type: regex
+      value: (치료|효과|회복|보장|개선|치유)\\s*.{0,12}\\s*(완치|완벽|절대|100%|100\\s*퍼센트)
+      flags: i
+- id: MED-SPECIALIST-02
+  topic: 의료
+  severity: warn
+  rationale: 전문의/의료진 우월성·최상급 과장
+  legal_ref: 의료법, 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (국내\\s*1위|세계적|최고의|유일의)\\s*.{0,8}\\s*(의사|전문의|교수)
+    - type: regex
+      value: (보드\\s*인증|더블\\s*보드)\\s*.{0,8}\\s*(보장|확실)
+- id: MED-BEFORE-AFTER-03
+  topic: 시술/미용
+  severity: warn
+  rationale: 전후 사진·극단적 비교 일반화 금지
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (시술\\s*전|시술\\s*후|전후\\s*사진)\\s*.{0,10}\\s*(극적|확실|보장)
+    - type: regex
+      value: (개인차|부작용)\\s*고지\\s*부족
+      flags: i
+- id: MED-DISCOUNT-PRICE-04
+  topic: 시술/미용
+  severity: block
+  rationale: 시술·치료의 할인/특가/무료 유인 광고 금지
+  legal_ref: 의료법 제56조, 의료광고 심의기준(경제적 이익 제공 금지)
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (특가|초특가|할인|파격가|반값|무료)\\s*.{0,8}\\s*(시술|수술|치료)
+    - type: regex
+      value: (쿠폰|이벤트)\\s*.{0,8}\\s*(보장|확정)
+- id: MED-RISK-OMISSION-05
+  topic: 의료
+  severity: warn
+  rationale: 시술 위험·부작용·금기사항 축소/미고지
+  legal_ref: 의료광고 심의기준(위험 고지 의무)
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (마취|출혈|감염|흉터|부종|멍|통증)\\s*(없음|제로|무)
+    - type: regex
+      value: (부작용)\\s*.{0,6}\\s*(전혀|절대\\s*없음)
+- id: MED-COMPARATIVE-06
+  topic: 의료
+  severity: warn
+  rationale: 타 병원·시술 직접 비교·비방
+  legal_ref: 의료광고 심의기준(비교 광고 제한)
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: regex
+      value: (타\\s*병원|타\\s*의원|타\\s*클리닉)\\s*.{0,6}\\s*(보다|대비)\\s*.{0,6}\\s*(우수|최고|완벽)
+    - type: regex
+      value: (타\\s*시술)\\s*.{0,6}\\s*(무용|열등|비효율)
+- id: MED-COSMETIC-EFFECT-03
+  topic: 의료
+  severity: block
+  rationale: 피부·외모 개선 단정 표현 탐지
+  legal_ref: 의료광고 심의기준, 화장품 효능표현 가이드
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (피부가|피부를)\\s*.{0,12}\\s*(매끈|보드랍|고와지|탱탱|탄탄|쫀쫀|탄력)\\s*.{0,12}\\s*(된다|만들어|효과|개선|변화)
+    - type: regex
+      value: (주름|탄력|모공|기미|잡티|흉터)\\s*.{0,10}\\s*(없어지|사라지|개선|줄어들|회복)
+    - type: regex
+      value: (즉시|단번에|한 번만|바로)\\s*.{0,10}\\s*(효과|확인|개선|변화)
+    - type: regex
+      value: (동안|브이\\s*라인|광채|화이트닝|리프팅|윤기)\\s*.{0,10}\\s*(효과|보장|확실|개선)
+- id: MED-BEFORE-AFTER-04
+  topic: 의료
+  severity: warn
+  rationale: 전후사진·극적 사례 일반화 금지(변형)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (시술\\s*전후|Before\\s*After|비포애프터)\\s*.{0,12}\\s*(극적|놀라운|확실|보장)
+    - type: regex
+      value: (사진|이미지|후기)\\s*.{0,12}\\s*(보장|보증|확정|완벽)
+- id: FOOD-DISEASE-CLAIM-04
+  topic: 식품위생
+  severity: block
+  rationale: 질병 치료·예방·건강개선 단정(변형 포함)
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (혈압|혈당|콜레스테롤|중성지방)\\s*.{0,10}\\s*(조절|개선|정상화|낮춰|올려|치료)
+    - type: regex
+      value: (면역력|관절|간|위|장|치매|심장)\\s*.{0,10}\\s*(강화|회복|치료|예방|개선)
+    - type: regex
+      value: (다이어트|체중|비만|살)\\s*.{0,10}\\s*(감소|감량|개선|없애|줄여)
+- id: FOOD-ABSOLUTE-05
+  topic: 식품위생
+  severity: warn
+  rationale: 식품의 절대·즉시 효과 표현(유사 문장 포함)
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:HFS_MODERATE
+  patterns:
+    any:
+    - type: regex
+      value: (하루|단기간|짧은 기간)\\s*.{0,12}\\s*(완치|회복|효과|확실|보장)
+    - type: regex
+      value: (즉시|즉각|바로|곧바로)\\s*.{0,8}\\s*(효과|개선|확인)
+    - type: regex
+      value: (100%|절대|완벽|확실)\\s*.{0,10}\\s*(치료|효과|보장|회복)
+- id: MED-ROOT-CAUSE-BLOCK
+  topic: 의료
+  severity: block
+  rationale: ‘근본/원인/원초적/뿌리’가 치료·해결·제거·근절 등과 결합된 확정·과장 표현 차단
+  legal_ref: 의료광고 심의기준(과장·확정 표현 금지)
+  actions:
+  - suggest:MED_SAFE_ALT
+  except_window: 24
+  except:
+    any:
+    - (사용하지 않|쓰지 않|자제하|금지|권장하지 않|아닐 수 있|부적절)
+  patterns:
+    any:
+    - type: regex
+      value: (근본|원초적)\\s*.{0,8}\\s*원인
+    - type: regex
+      value: 원인\\s*.{0,6}\\s*(제거|해결|근절|없애|차단)
+    - type: regex
+      value: (뿌리|뿌리째|뿌리부터)\\s*.{0,6}\\s*(치료|해결|제거|근절)
+    - type: regex
+      value: (근본|원초적|뿌리)\\s*.{0,12}\\s*(치료|해결|개선|보장)
+- id: MED-ROOT-CAUSE-TOKENS
+  topic: 의료
+  severity: block
+  rationale: ‘근본/원인/원초적/뿌리’ 단어 자체 사용 금지(보수적 차단)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_SOFTEN
+  except_window: 24
+  except:
+    any:
+    - (사용하지 않|쓰지 않|자제하|금지|권장하지 않|아닐 수 있|부적절)
+  patterns:
+    any:
+    - type: keyword
+      value: 근본
+      spacing_agnostic: true
+    - type: keyword
+      value: 원인
+      spacing_agnostic: true
+    - type: keyword
+      value: 원초적
+      spacing_agnostic: true
+    - type: keyword
+      value: 뿌리
+      spacing_agnostic: true
+- id: NAVER-ADULT-01
+  topic: 네이버/금칙어
+  severity: block
+  rationale: 성인/음란 키워드는 네이버 블로그·카페에서 노출 차단 및 제재 위험
+  actions:
+  - suggest:GEN_REMOVE
+  patterns:
+    any:
+    - type: regex
+      value: (야동|포르노|섹스|조건만남|성매매|원나잇|성인용품|AV)
+- id: NAVER-GAMBLING-01
+  topic: 네이버/금칙어
+  severity: block
+  rationale: 도박·사행성 키워드는 네이버 정책 위반
+  actions:
+  - suggest:GEN_REMOVE
+  patterns:
+    any:
+    - type: regex
+      value: (토토|바카라|사설카지노|맞고머니|홀덤머니|먹튀)
+- id: NAVER-CRIME-01
+  topic: 네이버/금칙어
+  severity: block
+  rationale: 불법/범죄 관련 키워드는 검색·계정 제재 위험
+  actions:
+  - suggest:GEN_REMOVE
+  patterns:
+    any:
+    - type: regex
+      value: (대포통장|대포폰|불법대출|사채|대리게임)
+- id: NAVER-DRUG-01
+  topic: 네이버/금칙어
+  severity: block
+  rationale: 마약/불법 약물 키워드는 정책상 금지
+  actions:
+  - suggest:GEN_REMOVE
+  patterns:
+    any:
+    - type: regex
+      value: (히로뽕|필로폰|대마|코카인|마약)
+- id: NAVER-EXAGGERATION-01
+  topic: 네이버/금칙어
+  severity: high
+  rationale: 네이버 광고 심사에서 과장/절대 표현은 반려 사유
+  actions:
+  - suggest:GEN_SOFTEN
+  patterns:
+    any:
+    - type: regex
+      value: (100%|절대|무조건|완벽|보장|평생|영구적|확실한)
+- id: NAVER-SPAM-01
+  topic: 네이버/금칙어
+  severity: medium
+  rationale: 리뷰 알바·체험단 등은 검색 제한 위험
+  actions:
+  - suggest:GEN_REMOVE
+  patterns:
+    any:
+    - type: regex
+      value: (체험단 모집|원고료 지급|리뷰 알바)
+- id: ABSX-001
+  topic: 공통광고(심화)
+  severity: block
+  rationale: 보편적 절대·확약 표현 (문장형 변주 포함)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  except_window: 18
+  except:
+    any:
+    - (아닐 수 있|보장되지 않|경우에 따르|개인차)
+  patterns:
+    any:
+    - type: regex
+      value: (절대|무조건|반드시|확실(?:히)?|틀림없\w*)\s*.{0,10}\s*(효과|개선|보장|증명|성공)
+    - type: regex
+      value: (효과|개선|성공)\s*.{0,10}\s*(보장|보증|확약|담보)
+- id: ABSX-002
+  topic: 공통광고(심화)
+  severity: block
+  rationale: 위험·부작용·副作用 제로 단정 (다국어 포함)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (위험|부작용|副作用)\s*.{0,8}\s*(없음|제로|0%|無|ゼロ|ZERO)
+- id: ABSX-003
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 즉시/단번/바로 + 결과 단정 패턴 확대
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (즉시|즉각|단번에|단숨|순식간|바로)\s*.{0,10}\s*(변화|효과|개선|확인|완화)
+- id: ABSX-004
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 최상급·유일성·국내 1위 주장 (근거 필요)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (국내\s*1위|업계\s*1위|최고|유일|독보적|Only\s*One)
+- id: ABSX-005
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 전문가·권위 오인(의사·교수·기관) 확대
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|교수|연구소|기관)\s*.{0,8}\s*(보장|인증|검증|추천)
+- id: ABSX-006
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 사용자 후기 일반화(대다수/전원/압도적)
+  legal_ref: 추천·보증 등에 관한 표시·광고 심사지침
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (후기|리뷰|평가)\s*.{0,10}\s*(전원|대다수|압도적|모두)
+- id: ABSX-007
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 비교·비방(타사 대비 우월) 일반화
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 타사
+      - 대비
+      max_gap: 2
+    - type: regex
+      value: (타사|경쟁사|다른\s*업체)\s*.{0,8}\s*(보다|대비)\s*.{0,10}\s*(우수|월등|압도)
+- id: ABSX-008
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 데이터·통계 수치 사용시 근거 요구
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (\d+%|\d+명|\d+건|Top\s*\d+)\s*.{0,10}\s*(만족|효과|선호|성공)
+- id: ABSX-009
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 무료/무상 오인 (조건 미고지)
+  legal_ref: 전자상거래법, 표시에 관한 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (무료|무상|공짜)\s*.{0,8}\s*(제공|증정|가입)
+- id: ABSX-010
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 한정/마감임박 상시 사용(허위 희소성)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (한정|소진시|마감임박|품절임박)\b
+- id: ABSX-011
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 다국어 우월·제로 어휘 변주
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (zero|ゼロ|ZERO|無|no\s*risk|risk\s*free)
+- id: ABSX-012
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 주관적 체감의 객관화(확인/증명 뉘앙스)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (체감|느낌|기분)\s*.{0,10}\s*(증명|보장|검증)
+- id: PRCX-001
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 허위비교가·상시할인 오인
+  legal_ref: 전자상거래법, 공정위 고시
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (정가|소비자가|출고가)\s*.{0,6}\s*(대비|에서)\s*.{0,6}\s*(할인|세일)
+    - type: regex
+      value: (상시|항상|언제나)\s*.{0,6}\s*(할인|세일)
+- id: PRCX-002
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 최저가 보장·역대가 고정문구
+  legal_ref: 전자상거래법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (최저가|역대가|역대급)\s*.{0,8}\s*(보장|약속|확약)
+- id: PRCX-003
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 환불·보상 100%·무조건 환급
+  legal_ref: 전자상거래법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (전액|100%|무조건)\s*.{0,6}\s*(환불|환급|보상)
+- id: PRCX-004
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 사은품·증정 조건 미고지
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (무료|사은|증정)\s*.{0,8}\s*(제공|증정|지급)
+- id: PRCX-005
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 한정수량·한정기간 상시 사용
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (한정|오늘만|마감임박|소진시)\b
+- id: PRCX-006
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 비교 비방·우월성 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (타사|경쟁사|다른\s*업체)\s*.{0,8}\s*(보다|대비).{0,10}(우수|월등|압도)
+- id: MEDX-001
+  topic: 의료(추가)
+  severity: block
+  rationale: 재발 없음·사실상 없음(완곡 표현 포함)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 재발
+      - 없
+      max_gap: 3
+    - type: regex
+      value: 재발률.(0, 8)(거의|매우|사실상).(0, 4)없
+- id: MEDX-002
+  topic: 의료(추가)
+  severity: block
+  rationale: 완치/영구적 개선·평생 유지
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (완치|완전\s*회복|영구\s*개선|평생\s*유지)
+- id: MEDX-003
+  topic: 의료(추가)
+  severity: warn
+  rationale: 즉시/바로/단번 효과 문형 확대
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: regex
+      value: (즉시|즉각|바로|단번에)\s*.{0,8}\s*(진정|완화|개선|회복)
+- id: MEDX-004
+  topic: 의료(추가)
+  severity: warn
+  rationale: 부작용·위험 0% 주장
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (부작용|위험|출혈|감염)\s*.{0,8}\s*(없음|제로|전혀)
+- id: MEDX-005
+  topic: 의료(추가)
+  severity: warn
+  rationale: 비교우월·타병원 비방 변주
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 타
+      - 병원
+      max_gap: 2
+    - type: regex
+      value: (다른)\s*병원과\s*달리
+- id: MEDX-006
+  topic: 의료(추가)
+  severity: warn
+  rationale: 장비·전문의 우월성 일반화
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (첨단|최신|프리미엄)\s*장비
+    - type: regex
+      value: (전문의|교수|원장)\s*.{0,6}\s*(최고|No\.?1|최다)
+- id: MEDX-007
+  topic: 의료(추가)
+  severity: warn
+  rationale: 전후사진 과장·무보정 주장
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (시술\s*전후|Before\s*After|비포애프터)\s*.{0,12}\s*(극적|보장|확실)
+- id: MEDX-008
+  topic: 의료(추가)
+  severity: warn
+  rationale: 회복속도 과장(바로 퇴원/즉시 복귀)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: regex
+      value: (바로|즉시)\s*.{0,8}\s*(퇴원|복귀|일상\s*생활)
+- id: MEDX-009
+  topic: 의료(추가)
+  severity: warn
+  rationale: 통증 없음·무통 단정
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (무통|통증\s*없음|아프지\s*않)
+- id: MEDX-010
+  topic: 의료(추가)
+  severity: warn
+  rationale: 성공률·만족도 수치 일반화
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: 성공률\s*(90%|100%)
+    - type: regex
+      value: 만족도\s*(매우\s*높|최고)
+- id: HFSX-001
+  topic: 건강기능식품(추가)
+  severity: block
+  rationale: 질병 치료·예방·경감 표방 (문형 확대)
+  legal_ref: 식품표시광고법 제8조, 건강기능식품법 제18조
+  actions:
+  - suggest:HFS_ALLOWABLE_CLAIM
+  patterns:
+    any:
+    - type: regex
+      value: (혈압|혈당|콜레스테롤|중성지방)\s*.{0,10}\s*(정상화|조절|개선|낮춰|올려|치료)
+    - type: regex
+      value: (관절|간|위|장|치매|우울|불면)\s*.{0,10}\s*(개선|치유|치료|예방)
+- id: HFSX-002
+  topic: 건강기능식품(추가)
+  severity: block
+  rationale: 의약품/처방급/메디컬 오인
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (의약품|처방|메디컬|약\s*같은)\s*(효과|수준)
+- id: HFSX-003
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 기능성 과장·인증 오인
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:HFS_ALLOWABLE_CLAIM
+  patterns:
+    any:
+    - type: regex
+      value: (기능성|공인|인증|테스트)\s*.{0,8}\s*(보장|완료|증명|검증)
+- id: HFSX-004
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 다이어트·체중감량 보장
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (일주일|7일|한\s*달)\s*.{0,8}\s*(\d+\s*kg|킬로)\s*.{0,8}\s*(감량|빼기)
+- id: HFSX-005
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 연령·성별 일반화
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (아이|어린이|노인|임산부)\s*.{0,8}\s*(에게|모두)\s*.{0,8}\s*(좋다|필수|효과)
+- id: HFSX-006
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 천연·무첨가·유기농 무해 오인
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (천연|자연유래|유기농|무첨가)\s*.{0,8}\s*(무해|부작용\s*없음|안전)
+- id: HFSX-007
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 전문가 추천·의학 권위 오인
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|교수|병원)\s*.{0,8}\s*(추천|보장|검증)
+- id: HFSX-008
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 임상·시험 결과 과장
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (임상|실험|시험)\s*.{0,8}\s*(완료|검증|보장)
+- id: HFSX-009
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 식품에서 질환명 직접 언급·개선 단정
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (당뇨|고혈압|고지혈증|비만|불면증)\s*.{0,8}\s*(개선|완화|치료|정상화)
+- id: HFSX-010
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 요요 없음·영구 유지 단정
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (요요)\s*.{0,6}\s*(없음|제로)
+    - type: regex
+      value: (영구|평생)\s*.{0,8}\s*(유지|보장)
+- id: REX-001
+  topic: 부동산
+  severity: block
+  rationale: 확정 수익·수익률 보장·분양가 고정
+  legal_ref: 표시·광고의 공정화법, 주택법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (확정\s*수익|수익률\s*보장|분양가\s*고정)
+- id: REX-002
+  topic: 부동산
+  severity: warn
+  rationale: 공실 0%·만실 보장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (공실\s*0%|항상\s*임대|만실\s*보장)
+- id: REX-003
+  topic: 부동산
+  severity: warn
+  rationale: 역세권/학군최강·입지 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (더블\s*역세권|트리플\s*역세권|학군\s*최강)
+- id: REX-004
+  topic: 부동산
+  severity: warn
+  rationale: 개발 호재 확정 표현
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (확정\s*개발|승인\s*임박|곧\s*승인)
+- id: REX-005
+  topic: 부동산
+  severity: warn
+  rationale: 공공기관·지자체 인증/보증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (지자체|국가|LH|SH)\s*.{0,8}\s*(보증|보장|확정)
+- id: REX-006
+  topic: 부동산
+  severity: warn
+  rationale: 한정/마감임박·프리미엄 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (한정\s*호실|마감\s*임박|즉시\s*완판)
+- id: REX-007
+  topic: 부동산
+  severity: warn
+  rationale: 수익형 부동산 비교 우월성 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (타\s*상품|경쟁\s*상품)\s*.{0,8}\s*(보다|대비).{0,10}(안전|수익|수수료)
+- id: REX-008
+  topic: 부동산
+  severity: warn
+  rationale: 대출·금리 혜택 과장·조건 미고지
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (무이자|초저금리|특례\s*대출)\s*.{0,10}\s*(보장|확약|상시)
+- id: EDUX-001
+  topic: 교육/취업
+  severity: block
+  rationale: 100% 취업/합격 보장·전원 합격
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (100%|전원)\s*.{0,6}\s*(취업|합격)\s*.{0,6}\s*(보장|약속)
+- id: EDUX-002
+  topic: 교육/취업
+  severity: warn
+  rationale: 단기간 성적 급상승·만점
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (단기간|한\s*달만에|2주만에)\s*.{0,8}\s*(만점|상위\s*1%|급상승)
+- id: EDUX-003
+  topic: 교육/취업
+  severity: warn
+  rationale: 유명강사·합격생 수 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (합격생\s*\d+명|수강생\s*\d+만|만족도\s*\d+%)
+- id: EDUX-004
+  topic: 교육/취업
+  severity: warn
+  rationale: 정부/공인 인증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (교육부|정부|국가공인)\s*.{0,8}\s*(인증|승인|보장)
+- id: EDUX-005
+  topic: 교육/취업
+  severity: warn
+  rationale: 환급·전액환불·무한패스 보장
+  legal_ref: 전자상거래법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (환급|전액\s*환불|무한\s*패스)\s*(보장|약속)
+- id: EDUX-006
+  topic: 교육/취업
+  severity: warn
+  rationale: 취업 연계·기업 제휴 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (취업\s*연계|기업\s*제휴)\s*.{0,8}\s*(보장|확정|단독)
+- id: EDUX-007
+  topic: 교육/취업
+  severity: warn
+  rationale: 합격보장반·성공보장반 명칭 일반화
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (합격\s*보장\s*반|성공\s*보장\s*반|패스\s*보장)
+- id: EDUX-008
+  topic: 교육/취업
+  severity: warn
+  rationale: 수치·랭킹 근거 미제시
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (1위|Top\s*\d+|상위\s*\d+%)\s*.{0,8}\s*(달성|유지)
+- id: FITX-001
+  topic: 다이어트/피트니스
+  severity: block
+  rationale: 단기간 큰 폭 감량 보장
+  legal_ref: 표시·광고의 공정화법, 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (일주일|7일|한\s*달)\s*.{0,8}\s*(\d+\s*kg|킬로)\s*.{0,8}\s*(감량|빼기)
+- id: FITX-002
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 무운동·무식단 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (운동|식단)\s*.{0,6}\s*(없이|불필요)
+- id: FITX-003
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 요요 없음·영구 유지
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (요요)\s*.{0,6}\s*(없음|제로)
+    - type: regex
+      value: (영구|평생)\s*.{0,6}\s*(유지|보장)
+- id: FITX-004
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 부위지방 제거 보장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (뱃살|허벅지|팔뚝|얼굴살)\s*.{0,8}\s*(즉시|확실|완벽)\s*.{0,8}\s*(감소|제거)
+- id: FITX-005
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 전후사진 극적 변화 일반화
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (비포|애프터|전후)\s*.{0,8}\s*(보장|확실|극적)
+- id: FITX-006
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 건강상태 개선 단정(체지방/대사)
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (체지방|대사|기초대사량|내장지방)\s*.{0,8}\s*(개선|정상화|감소)
+- id: FITX-007
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 안전성·부작용 0% 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (부작용|위험)\s*.{0,8}\s*(없음|제로|전혀)
+- id: FITX-008
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 전문가·기관 보증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (전문의|의사|기관|연구소)\s*.{0,8}\s*(보장|인증|검증)
+- id: WELX-001
+  topic: 건강기기/웰니스
+  severity: block
+  rationale: 의료기기/의료용 오인·승인·인증
+  legal_ref: 의료기기법, 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의료기기|의료용)\s*.{0,8}\s*(승인|인증|보증)
+- id: WELX-002
+  topic: 건강기기/웰니스
+  severity: block
+  rationale: 질병 치료·완치·통증 치료 단정
+  legal_ref: 의료기기법, 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (치료|완치|질병\s*개선|통증\s*치료)
+- id: WELX-003
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 혈압·혈당·통증 수치 개선 단정
+  legal_ref: 의료기기법, 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (혈압|혈당|통증)\s*.{0,8}\s*(개선|정상화|완화)
+- id: WELX-004
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 전문가·임상 검증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|임상|시험)\s*.{0,8}\s*(보장|인증|검증)
+- id: WELX-005
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 안전성 100%·부작용 없음
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (안전성)\s*.{0,6}\s*(100%|완벽)
+    - type: regex
+      value: (부작용)\s*.{0,6}\s*(없음|제로|전혀)
+- id: WELX-006
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 다국어·수치·통계 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (Top\s*\d+|\d+%|임상\s*\d+건)\s*.{0,8}\s*(검증|보장|승인)
+- id: WELX-007
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 운동·식단 불필요 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (운동|식단)\s*.{0,8}\s*(없이|불필요)
+- id: WELX-008
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 개인 결과 일반화
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (개인차|사람마다)\s*.{0,10}\s*(없다|무시|상관없다)
+- id: ABSX-001
+  topic: 공통광고(심화)
+  severity: block
+  rationale: 보편적 절대·확약 표현 (문장형 변주 포함)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  except_window: 18
+  except:
+    any:
+    - (아닐 수 있|보장되지 않|경우에 따르|개인차)
+  patterns:
+    any:
+    - type: regex
+      value: (절대|무조건|반드시|확실(?:히)?|틀림없\w*)\s*.{0,10}\s*(효과|개선|보장|증명|성공)
+    - type: regex
+      value: (효과|개선|성공)\s*.{0,10}\s*(보장|보증|확약|담보)
+- id: ABSX-002
+  topic: 공통광고(심화)
+  severity: block
+  rationale: 위험·부작용·副作用 제로 단정 (다국어 포함)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (위험|부작용|副作用)\s*.{0,8}\s*(없음|제로|0%|無|ゼロ|ZERO)
+- id: ABSX-003
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 즉시/단번/바로 + 결과 단정 패턴 확대
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (즉시|즉각|단번에|단숨|순식간|바로)\s*.{0,10}\s*(변화|효과|개선|확인|완화)
+- id: ABSX-004
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 최상급·유일성·국내 1위 주장 (근거 필요)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (국내\s*1위|업계\s*1위|최고|유일|독보적|Only\s*One)
+- id: ABSX-005
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 전문가·권위 오인(의사·교수·기관) 확대
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|교수|연구소|기관)\s*.{0,8}\s*(보장|인증|검증|추천)
+- id: ABSX-006
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 사용자 후기 일반화(대다수/전원/압도적)
+  legal_ref: 추천·보증 등에 관한 표시·광고 심사지침
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (후기|리뷰|평가)\s*.{0,10}\s*(전원|대다수|압도적|모두)
+- id: ABSX-007
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 비교·비방(타사 대비 우월) 일반화
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 타사
+      - 대비
+      max_gap: 2
+    - type: regex
+      value: (타사|경쟁사|다른\s*업체)\s*.{0,8}\s*(보다|대비)\s*.{0,10}\s*(우수|월등|압도)
+- id: ABSX-008
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 데이터·통계 수치 사용시 근거 요구
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (\d+%|\d+명|\d+건|Top\s*\d+)\s*.{0,10}\s*(만족|효과|선호|성공)
+- id: ABSX-009
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 무료/무상 오인 (조건 미고지)
+  legal_ref: 전자상거래법, 표시에 관한 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (무료|무상|공짜)\s*.{0,8}\s*(제공|증정|가입)
+- id: ABSX-010
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 한정/마감임박 상시 사용(허위 희소성)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (한정|소진시|마감임박|품절임박)\b
+- id: ABSX-011
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 다국어 우월·제로 어휘 변주
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (zero|ゼロ|ZERO|無|no\s*risk|risk\s*free)
+- id: ABSX-012
+  topic: 공통광고(심화)
+  severity: warn
+  rationale: 주관적 체감의 객관화(확인/증명 뉘앙스)
+  legal_ref: 표시·광고의 공정화법 제3조
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (체감|느낌|기분)\s*.{0,10}\s*(증명|보장|검증)
+- id: PRCX-001
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 허위비교가·상시할인 오인
+  legal_ref: 전자상거래법, 공정위 고시
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (정가|소비자가|출고가)\s*.{0,6}\s*(대비|에서)\s*.{0,6}\s*(할인|세일)
+    - type: regex
+      value: (상시|항상|언제나)\s*.{0,6}\s*(할인|세일)
+- id: PRCX-002
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 최저가 보장·역대가 고정문구
+  legal_ref: 전자상거래법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (최저가|역대가|역대급)\s*.{0,8}\s*(보장|약속|확약)
+- id: PRCX-003
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 환불·보상 100%·무조건 환급
+  legal_ref: 전자상거래법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (전액|100%|무조건)\s*.{0,6}\s*(환불|환급|보상)
+- id: PRCX-004
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 사은품·증정 조건 미고지
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (무료|사은|증정)\s*.{0,8}\s*(제공|증정|지급)
+- id: PRCX-005
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 한정수량·한정기간 상시 사용
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (한정|오늘만|마감임박|소진시)\b
+- id: PRCX-006
+  topic: 가격/비교(심화)
+  severity: warn
+  rationale: 비교 비방·우월성 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (타사|경쟁사|다른\s*업체)\s*.{0,8}\s*(보다|대비).{0,10}(우수|월등|압도)
+- id: MEDX-001
+  topic: 의료(추가)
+  severity: block
+  rationale: 재발 없음·사실상 없음(완곡 표현 포함)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 재발
+      - 없
+      max_gap: 3
+    - type: regex
+      value: 재발률.(0, 8)(거의|매우|사실상).(0, 4)없
+- id: MEDX-002
+  topic: 의료(추가)
+  severity: block
+  rationale: 완치/영구적 개선·평생 유지
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (완치|완전\s*회복|영구\s*개선|평생\s*유지)
+- id: MEDX-003
+  topic: 의료(추가)
+  severity: warn
+  rationale: 즉시/바로/단번 효과 문형 확대
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: regex
+      value: (즉시|즉각|바로|단번에)\s*.{0,8}\s*(진정|완화|개선|회복)
+- id: MEDX-004
+  topic: 의료(추가)
+  severity: warn
+  rationale: 부작용·위험 0% 주장
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (부작용|위험|출혈|감염)\s*.{0,8}\s*(없음|제로|전혀)
+- id: MEDX-005
+  topic: 의료(추가)
+  severity: warn
+  rationale: 비교우월·타병원 비방 변주
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: phrase
+      terms:
+      - 타
+      - 병원
+      max_gap: 2
+    - type: regex
+      value: (다른)\s*병원과\s*달리
+- id: MEDX-006
+  topic: 의료(추가)
+  severity: warn
+  rationale: 장비·전문의 우월성 일반화
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (첨단|최신|프리미엄)\s*장비
+    - type: regex
+      value: (전문의|교수|원장)\s*.{0,6}\s*(최고|No\.?1|최다)
+- id: MEDX-007
+  topic: 의료(추가)
+  severity: warn
+  rationale: 전후사진 과장·무보정 주장
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (시술\s*전후|Before\s*After|비포애프터)\s*.{0,12}\s*(극적|보장|확실)
+- id: MEDX-008
+  topic: 의료(추가)
+  severity: warn
+  rationale: 회복속도 과장(바로 퇴원/즉시 복귀)
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_SET_EXPECT
+  patterns:
+    any:
+    - type: regex
+      value: (바로|즉시)\s*.{0,8}\s*(퇴원|복귀|일상\s*생활)
+- id: MEDX-009
+  topic: 의료(추가)
+  severity: warn
+  rationale: 통증 없음·무통 단정
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:MED_RISK_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (무통|통증\s*없음|아프지\s*않)
+- id: MEDX-010
+  topic: 의료(추가)
+  severity: warn
+  rationale: 성공률·만족도 수치 일반화
+  legal_ref: 의료광고 심의기준
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: 성공률\s*(90%|100%)
+    - type: regex
+      value: 만족도\s*(매우\s*높|최고)
+- id: HFSX-001
+  topic: 건강기능식품(추가)
+  severity: block
+  rationale: 질병 치료·예방·경감 표방 (문형 확대)
+  legal_ref: 식품표시광고법 제8조, 건강기능식품법 제18조
+  actions:
+  - suggest:HFS_ALLOWABLE_CLAIM
+  patterns:
+    any:
+    - type: regex
+      value: (혈압|혈당|콜레스테롤|중성지방)\s*.{0,10}\s*(정상화|조절|개선|낮춰|올려|치료)
+    - type: regex
+      value: (관절|간|위|장|치매|우울|불면)\s*.{0,10}\s*(개선|치유|치료|예방)
+- id: HFSX-002
+  topic: 건강기능식품(추가)
+  severity: block
+  rationale: 의약품/처방급/메디컬 오인
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (의약품|처방|메디컬|약\s*같은)\s*(효과|수준)
+- id: HFSX-003
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 기능성 과장·인증 오인
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:HFS_ALLOWABLE_CLAIM
+  patterns:
+    any:
+    - type: regex
+      value: (기능성|공인|인증|테스트)\s*.{0,8}\s*(보장|완료|증명|검증)
+- id: HFSX-004
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 다이어트·체중감량 보장
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (일주일|7일|한\s*달)\s*.{0,8}\s*(\d+\s*kg|킬로)\s*.{0,8}\s*(감량|빼기)
+- id: HFSX-005
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 연령·성별 일반화
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (아이|어린이|노인|임산부)\s*.{0,8}\s*(에게|모두)\s*.{0,8}\s*(좋다|필수|효과)
+- id: HFSX-006
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 천연·무첨가·유기농 무해 오인
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (천연|자연유래|유기농|무첨가)\s*.{0,8}\s*(무해|부작용\s*없음|안전)
+- id: HFSX-007
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 전문가 추천·의학 권위 오인
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|교수|병원)\s*.{0,8}\s*(추천|보장|검증)
+- id: HFSX-008
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 임상·시험 결과 과장
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (임상|실험|시험)\s*.{0,8}\s*(완료|검증|보장)
+- id: HFSX-009
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 식품에서 질환명 직접 언급·개선 단정
+  legal_ref: 식품표시광고법 제8조
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (당뇨|고혈압|고지혈증|비만|불면증)\s*.{0,8}\s*(개선|완화|치료|정상화)
+- id: HFSX-010
+  topic: 건강기능식품(추가)
+  severity: warn
+  rationale: 요요 없음·영구 유지 단정
+  legal_ref: 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (요요)\s*.{0,6}\s*(없음|제로)
+    - type: regex
+      value: (영구|평생)\s*.{0,8}\s*(유지|보장)
+- id: REX-001
+  topic: 부동산
+  severity: block
+  rationale: 확정 수익·수익률 보장·분양가 고정
+  legal_ref: 표시·광고의 공정화법, 주택법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (확정\s*수익|수익률\s*보장|분양가\s*고정)
+- id: REX-002
+  topic: 부동산
+  severity: warn
+  rationale: 공실 0%·만실 보장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (공실\s*0%|항상\s*임대|만실\s*보장)
+- id: REX-003
+  topic: 부동산
+  severity: warn
+  rationale: 역세권/학군최강·입지 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (더블\s*역세권|트리플\s*역세권|학군\s*최강)
+- id: REX-004
+  topic: 부동산
+  severity: warn
+  rationale: 개발 호재 확정 표현
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (확정\s*개발|승인\s*임박|곧\s*승인)
+- id: REX-005
+  topic: 부동산
+  severity: warn
+  rationale: 공공기관·지자체 인증/보증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (지자체|국가|LH|SH)\s*.{0,8}\s*(보증|보장|확정)
+- id: REX-006
+  topic: 부동산
+  severity: warn
+  rationale: 한정/마감임박·프리미엄 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (한정\s*호실|마감\s*임박|즉시\s*완판)
+- id: REX-007
+  topic: 부동산
+  severity: warn
+  rationale: 수익형 부동산 비교 우월성 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (타\s*상품|경쟁\s*상품)\s*.{0,8}\s*(보다|대비).{0,10}(안전|수익|수수료)
+- id: REX-008
+  topic: 부동산
+  severity: warn
+  rationale: 대출·금리 혜택 과장·조건 미고지
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:RE_NEED_DISCLOSE
+  patterns:
+    any:
+    - type: regex
+      value: (무이자|초저금리|특례\s*대출)\s*.{0,10}\s*(보장|확약|상시)
+- id: EDUX-001
+  topic: 교육/취업
+  severity: block
+  rationale: 100% 취업/합격 보장·전원 합격
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (100%|전원)\s*.{0,6}\s*(취업|합격)\s*.{0,6}\s*(보장|약속)
+- id: EDUX-002
+  topic: 교육/취업
+  severity: warn
+  rationale: 단기간 성적 급상승·만점
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (단기간|한\s*달만에|2주만에)\s*.{0,8}\s*(만점|상위\s*1%|급상승)
+- id: EDUX-003
+  topic: 교육/취업
+  severity: warn
+  rationale: 유명강사·합격생 수 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (합격생\s*\d+명|수강생\s*\d+만|만족도\s*\d+%)
+- id: EDUX-004
+  topic: 교육/취업
+  severity: warn
+  rationale: 정부/공인 인증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (교육부|정부|국가공인)\s*.{0,8}\s*(인증|승인|보장)
+- id: EDUX-005
+  topic: 교육/취업
+  severity: warn
+  rationale: 환급·전액환불·무한패스 보장
+  legal_ref: 전자상거래법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (환급|전액\s*환불|무한\s*패스)\s*(보장|약속)
+- id: EDUX-006
+  topic: 교육/취업
+  severity: warn
+  rationale: 취업 연계·기업 제휴 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (취업\s*연계|기업\s*제휴)\s*.{0,8}\s*(보장|확정|단독)
+- id: EDUX-007
+  topic: 교육/취업
+  severity: warn
+  rationale: 합격보장반·성공보장반 명칭 일반화
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (합격\s*보장\s*반|성공\s*보장\s*반|패스\s*보장)
+- id: EDUX-008
+  topic: 교육/취업
+  severity: warn
+  rationale: 수치·랭킹 근거 미제시
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (1위|Top\s*\d+|상위\s*\d+%)\s*.{0,8}\s*(달성|유지)
+- id: FITX-001
+  topic: 다이어트/피트니스
+  severity: block
+  rationale: 단기간 큰 폭 감량 보장
+  legal_ref: 표시·광고의 공정화법, 식품표시광고법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (일주일|7일|한\s*달)\s*.{0,8}\s*(\d+\s*kg|킬로)\s*.{0,8}\s*(감량|빼기)
+- id: FITX-002
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 무운동·무식단 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (운동|식단)\s*.{0,6}\s*(없이|불필요)
+- id: FITX-003
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 요요 없음·영구 유지
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (요요)\s*.{0,6}\s*(없음|제로)
+    - type: regex
+      value: (영구|평생)\s*.{0,6}\s*(유지|보장)
+- id: FITX-004
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 부위지방 제거 보장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (뱃살|허벅지|팔뚝|얼굴살)\s*.{0,8}\s*(즉시|확실|완벽)\s*.{0,8}\s*(감소|제거)
+- id: FITX-005
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 전후사진 극적 변화 일반화
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (비포|애프터|전후)\s*.{0,8}\s*(보장|확실|극적)
+- id: FITX-006
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 건강상태 개선 단정(체지방/대사)
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (체지방|대사|기초대사량|내장지방)\s*.{0,8}\s*(개선|정상화|감소)
+- id: FITX-007
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 안전성·부작용 0% 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:FOOD_NEUTRAL_WORDING
+  patterns:
+    any:
+    - type: regex
+      value: (부작용|위험)\s*.{0,8}\s*(없음|제로|전혀)
+- id: FITX-008
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 전문가·기관 보증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (전문의|의사|기관|연구소)\s*.{0,8}\s*(보장|인증|검증)
+- id: WELX-001
+  topic: 건강기기/웰니스
+  severity: block
+  rationale: 의료기기/의료용 오인·승인·인증
+  legal_ref: 의료기기법, 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의료기기|의료용)\s*.{0,8}\s*(승인|인증|보증)
+- id: WELX-002
+  topic: 건강기기/웰니스
+  severity: block
+  rationale: 질병 치료·완치·통증 치료 단정
+  legal_ref: 의료기기법, 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (치료|완치|질병\s*개선|통증\s*치료)
+- id: WELX-003
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 혈압·혈당·통증 수치 개선 단정
+  legal_ref: 의료기기법, 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (혈압|혈당|통증)\s*.{0,8}\s*(개선|정상화|완화)
+- id: WELX-004
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 전문가·임상 검증 오인
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (의사|전문의|임상|시험)\s*.{0,8}\s*(보장|인증|검증)
+- id: WELX-005
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 안전성 100%·부작용 없음
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (안전성)\s*.{0,6}\s*(100%|완벽)
+    - type: regex
+      value: (부작용)\s*.{0,6}\s*(없음|제로|전혀)
+- id: WELX-006
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 다국어·수치·통계 과장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_NEED_EVIDENCE
+  patterns:
+    any:
+    - type: regex
+      value: (Top\s*\d+|\d+%|임상\s*\d+건)\s*.{0,8}\s*(검증|보장|승인)
+- id: WELX-007
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 운동·식단 불필요 주장
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (운동|식단)\s*.{0,8}\s*(없이|불필요)
+- id: WELX-008
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 개인 결과 일반화
+  legal_ref: 표시·광고의 공정화법
+  actions:
+  - suggest:GEN_SAFE_ALT
+  patterns:
+    any:
+    - type: regex
+      value: (개인차|사람마다)\s*.{0,10}\s*(없다|무시|상관없다)
+
+# 아래 항목들을 기존 kr-medhealth.yaml 맨 아래 rules: 목록에 그대로 이어붙이세요.
+# (규칙 ID는 충돌 방지를 위해 신규 번호대 사용)
+
+# ─────────────────────────────────────────────────
+# [의료] MEDX-101 ~
+# ─────────────────────────────────────────────────
+- id: MEDX-101
+  topic: 의료
+  severity: warn
+  rationale: 주체 과장·자사 강조 표현
+  legal_ref: "의료광고 심의기준, 표시·광고의 공정화법"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "\\b(저희|우리)(병원|의원|센터|클리닉)\\b"}
+      - {type: phrase, terms: ["우리","병원"], max_gap: 1}
+
+- id: MEDX-102
+  topic: 의료
+  severity: block
+  rationale: 단 1회 시술로 효과·유지 단정
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(단\\s*한\\s*번|1회|한\\s*번만)\\s*.{0,10}\\s*(시술|치료|진료)\\s*.{0,10}\\s*(효과|유지|해결)"}
+
+- id: MEDX-103
+  topic: 의료
+  severity: warn
+  rationale: 통증/고통 완화 속도 과장
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(통증|고통)\\s*.{0,6}\\s*(빠르게|즉시|단번에|즉각)\\s*.{0,10}\\s*(줄어|완화|감소)"}
+
+- id: MEDX-104
+  topic: 의료
+  severity: warn
+  rationale: 효과의 강도·정도 과장(현저히/뚜렷이)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(현저히|뚜렷이|눈에\\s*띄게)\\s*.{0,8}\\s*(감소|개선|회복|치유)"}
+
+- id: MEDX-105
+  topic: 의료
+  severity: warn
+  rationale: 무위험·안심 시술 오인
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_RISK_DISCLOSE"]
+  patterns:
+    any:
+      - {type: regex, value: "(안심하고|걱정\\s*없이)\\s*.{0,8}\\s*(시술|치료|수술)"}
+
+- id: MEDX-106
+  topic: 의료
+  severity: block
+  rationale: 치료·완치 단정(낫는다/사라진다)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(낫는[다]|완치|완전\\s*치료)"}
+      - {type: regex, value: "(증상|문제)\\s*.{0,6}\\s*(사라졌[다]|사라지|없어졌[다])"}
+
+- id: MEDX-107
+  topic: 의료
+  severity: warn
+  rationale: 신뢰·권위 일반화(근거 없는 신뢰 호소)
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(신뢰|믿음|믿을\\s*수)\\s*.{0,10}\\s*(있다|있는|받는다)"}
+
+- id: MEDX-108
+  topic: 의료
+  severity: warn
+  rationale: 타 병원 실패 사례 대비 우월성
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(실패했던|안되던)\\s*.{0,8}\\s*(사례|환자)\\s*.{0,8}\\s*(성공|개선)"}
+      - {type: phrase, terms: ["다른","병원과","달리"], max_gap: 2}
+
+- id: MEDX-109
+  topic: 의료
+  severity: warn
+  rationale: 단기간 회복·퇴원 속도 과장
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(단기간|짧은\\s*기간|빠른)\\s*.{0,8}\\s*(회복|퇴원|일상\\s*복귀)"}
+
+- id: MEDX-110
+  topic: 의료
+  severity: warn
+  rationale: 미용·피부 결과 과장(깨끗/매끈/탱탱)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(깨끗하게|말끔하게|완벽하게)\\s*.{0,8}\\s*(개선|정리|해결)"}
+      - {type: regex, value: "(매끈하|탱탱하|탄탄하)\\s*.{0,8}\\s*(된다|만들어)"}
+
+- id: MEDX-111
+  topic: 의료
+  severity: warn
+  rationale: 포괄적 건강·삶의 질 과장
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(건강한\\s*삶|삶의\\s*질|행복한\\s*생활)\\s*.{0,8}\\s*(보장|약속|확실)"}
+
+- id: MEDX-112
+  topic: 의료
+  severity: warn
+  rationale: 빠른 회복·즉시 효과 표현
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(빠른|즉시|즉각|단번에)\\s*.{0,8}\\s*(효과|회복|진정|완화)"}
+
+# ─────────────────────────────────────────────────
+# [건강기능식품/식품] HFSX-201 ~
+# ─────────────────────────────────────────────────
+- id: HFSX-201
+  topic: 식품/건기능
+  severity: warn
+  rationale: 건강·활력 포괄 과장(건강한 삶/활기찬 하루)
+  legal_ref: "식품표시광고법"
+  actions: ["suggest:FOOD_NEUTRAL_WORDING"]
+  patterns:
+    any:
+      - {type: regex, value: "(건강한\\s*삶|활기찬\\s*하루|하루가\\s*달라져)"} 
+
+- id: HFSX-202
+  topic: 식품/건기능
+  severity: warn
+  rationale: 단기간 감량/눈에 띄는 효과
+  legal_ref: "식품표시광고법"
+  actions: ["suggest:FOOD_NEUTRAL_WORDING"]
+  patterns:
+    any:
+      - {type: regex, value: "(단기간|짧은\\s*기간|빠르게)\\s*.{0,8}\\s*(감량|체중|살)\\s*.{0,8}\\s*(빼|감소)"}
+      - {type: regex, value: "눈에\\s*띄게\\s*.{0,8}\\s*(효과|개선|변화)"}
+
+- id: HFSX-203
+  topic: 식품/건기능
+  severity: warn
+  rationale: 무해·안심·아이도 안전 오인
+  legal_ref: "식품표시광고법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(안심하고|무해하|부작용\\s*거의\\s*없|아이도\\s*먹을\\s*수)"} 
+
+- id: HFSX-204
+  topic: 식품/건기능
+  severity: warn
+  rationale: 면역/기능 강화 단정(확실/보장)
+  legal_ref: "식품표시광고법"
+  actions: ["suggest:HFS_ALLOWABLE_CLAIM"]
+  patterns:
+    any:
+      - {type: regex, value: "(면역|체력|활력)\\s*.{0,8}\\s*(확실|보장|틀림없)\\s*.{0,8}\\s*(강화|증진|개선)"}
+
+- id: HFSX-205
+  topic: 식품/건기능
+  severity: warn
+  rationale: 질환/수치 포괄 개선 은유 표현
+  legal_ref: "식품표시광고법 제8조"
+  actions: ["suggest:FOOD_NEUTRAL_WORDING"]
+  patterns:
+    any:
+      - {type: regex, value: "(수치|컨디션|상태)\\s*.{0,8}\\s*(정상|본래|원래)\\s*.{0,8}\\s*(돌아|회복)"}
+
+- id: HFSX-206
+  topic: 식품/건기능
+  severity: warn
+  rationale: 요요 없음/영구 유지 암시
+  legal_ref: "식품표시광고법"
+  actions: ["suggest:FOOD_NEUTRAL_WORDING"]
+  patterns:
+    any:
+      - {type: regex, value: "(요요)\\s*.{0,6}\\s*(없음|제로|오지\\s*않)"}
+      - {type: regex, value: "(영구|평생)\\s*.{0,8}\\s*(유지|보장)"}
+
+# ─────────────────────────────────────────────────
+# [화장품/시술·미용] COSX-301 ~
+# ─────────────────────────────────────────────────
+- id: COSX-301
+  topic: 시술/미용
+  severity: warn
+  rationale: 외형 결과 과장(깨끗/매끈/탱탱/환해짐)
+  legal_ref: "의료광고 심의기준, 화장품법"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(깨끗하|말끔하|환해지|밝아지)\\s*.{0,8}\\s*(피부|얼굴|모공|흉터)"}
+      - {type: regex, value: "(매끈하|탱탱하|탄탄하)\\s*.{0,8}\\s*(효과|변화|개선)"}
+
+- id: COSX-302
+  topic: 시술/미용
+  severity: warn
+  rationale: 즉시/빠른 효과 단정
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(즉시|즉각|단번에|바로)\\s*.{0,8}\\s*(확인|효과|개선)"}
+
+- id: COSX-303
+  topic: 시술/미용
+  severity: warn
+  rationale: 실패 사례도 성공·타 시술 대비 우월
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(실패했던|안되던)\\s*.{0,8}\\s*(시술|케이스)\\s*.{0,8}\\s*(성공)"}
+      - {type: regex, value: "(다른\\s*시술|타\\s*방법)\\s*.{0,8}\\s*(보다|대비)\\s*.{0,8}\\s*(우수|월등|안전)"}
+
+- id: COSX-304
+  topic: 화장품
+  severity: warn
+  rationale: 감성·주관적 품질 과장(신뢰/만족)
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(신뢰|믿음|만족)\\s*.{0,8}\\s*(보장|확신|압도)"}
+
+# ─────────────────────────────────────────────────
+# [금융/가격/비교] FINX-401 ~
+# ─────────────────────────────────────────────────
+- id: FINX-401
+  topic: 금융
+  severity: block
+  rationale: 단기간 수익/확실한 투자/실패 없음
+  legal_ref: "금융감독원 광고 준칙"
+  actions: ["suggest:FIN_RISK_DISCLOSE"]
+  patterns:
+    any:
+      - {type: regex, value: "(단기간|짧은\\s*기간)\\s*.{0,8}\\s*(수익|고수익)"}
+      - {type: regex, value: "확실한\\s*투자|실패\\s*없(는|다)"}
+
+- id: FINX-402
+  topic: 가격/비교
+  severity: warn
+  rationale: 역대급/현저히 저렴/특가/완전 무료
+  legal_ref: "전자상거래법, 표시·광고의 공정화법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(역대급|역대가|현저히\\s*저렴|특가|완전\\s*무료)"}
+
+- id: FINX-403
+  topic: 가격/비교
+  severity: warn
+  rationale: 환불/환급 보장·전원 환급
+  legal_ref: "전자상거래법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(전액|100%|전원)\\s*.{0,6}\\s*(환불|환급|보상)"}
+
+# ─────────────────────────────────────────────────
+# [부동산] REX-501 ~
+# ─────────────────────────────────────────────────
+- id: REX-501
+  topic: 부동산
+  severity: block
+  rationale: 확정 수익률/반드시 오르는 가치
+  legal_ref: "표시·광고의 공정화법, 주택법"
+  actions: ["suggest:RE_NEED_DISCLOSE"]
+  patterns:
+    any:
+      - {type: regex, value: "(확정\\s*수익|반드시\\s*오르|수익률\\s*보장)"}
+
+- id: REX-502
+  topic: 부동산
+  severity: warn
+  rationale: 공실 0%/만실 보장
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:RE_NEED_DISCLOSE"]
+  patterns:
+    any:
+      - {type: regex, value: "(공실\\s*0%|항상\\s*임대|만실\\s*보장)"}
+
+- id: REX-503
+  topic: 부동산
+  severity: warn
+  rationale: 학군 최고/역세권 과장/즉시 완판
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(학군\\s*최고|더블\\s*역세권|즉시\\s*완판)"}
+
+# ─────────────────────────────────────────────────
+# [교육/취업] EDUX-601 ~
+# ─────────────────────────────────────────────────
+- id: EDUX-601
+  topic: 교육/취업
+  severity: block
+  rationale: 100% 합격/전원 합격/전원 취업
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(100%|전원)\\s*.{0,6}\\s*(합격|취업)\\s*.{0,6}\\s*(보장|약속)"}
+
+- id: EDUX-602
+  topic: 교육/취업
+  severity: warn
+  rationale: 단기간 만점/빠른 성적 향상
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(단기간|한\\s*달만에|2주만에)\\s*.{0,8}\\s*(만점|상위\\s*1%|급상승)"}
+
+# ─────────────────────────────────────────────────
+# [다이어트/피트니스] FITX-701 ~
+# ─────────────────────────────────────────────────
+- id: FITX-701
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 무운동/무식단·특정 부위 즉시 제거
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:FOOD_NEUTRAL_WORDING"]
+  patterns:
+    any:
+      - {type: regex, value: "(운동|식단)\\s*.{0,6}\\s*(없이|불필요)"}
+      - {type: regex, value: "(뱃살|허벅지|팔뚝|얼굴살)\\s*.{0,8}\\s*(즉시|완벽|확실)\\s*.{0,8}\\s*(감소|제거)"}
+
+- id: FITX-702
+  topic: 다이어트/피트니스
+  severity: warn
+  rationale: 단기간 체중 감소 보장
+  legal_ref: "표시·광고의 공정화법, 식품표시광고법"
+  actions: ["suggest:FOOD_NEUTRAL_WORDING"]
+  patterns:
+    any:
+      - {type: regex, value: "(일주일|7일|한\\s*달)\\s*.{0,8}\\s*(\\d+\\s*kg|킬로)\\s*.{0,8}\\s*(감량|빼기)"}
+
+# ─────────────────────────────────────────────────
+# [건강기기/웰니스] WELX-801 ~
+# ─────────────────────────────────────────────────
+- id: WELX-801
+  topic: 건강기기/웰니스
+  severity: block
+  rationale: 의료기기 오인/치료·완치 단정
+  legal_ref: "의료기기법, 표시·광고의 공정화법"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(의료기기|의료용)\\s*.{0,8}\\s*(승인|인증|보증)"}
+      - {type: regex, value: "(치료|완치|질병\\s*개선)"}
+
+- id: WELX-802
+  topic: 건강기기/웰니스
+  severity: warn
+  rationale: 혈압/혈당/통증 개선 단정
+  legal_ref: "의료기기법, 표시·광고의 공정화법"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(혈압|혈당|통증)\\s*.{0,8}\\s*(개선|정상화|완화)"}
+
+# ─────────────────────────────────────────────────
+# [공통광고 심화] ABSX-901 ~
+# ─────────────────────────────────────────────────
+- id: ABSX-901
+  topic: 공통광고
+  severity: warn
+  rationale: 반드시/틀림없이/확정적 등 절대표현 변주
+  legal_ref: "표시·광고의 공정화법 제3조"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(반드시|틀림없[이다]?|확정적|보증되[다]|보증된)\\b"}
+
+- id: ABSX-902
+  topic: 공통광고
+  severity: warn
+  rationale: 전원/대다수/압도적 만족 일반화
+  legal_ref: "추천·보증 등에 관한 심사지침"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(전원|대다수|압도적)\\s*.{0,6}\\s*(만족|선호|추천)"}
+
+- id: ABSX-903
+  topic: 공통광고
+  severity: warn
+  rationale: 정부/기관/전문가 인증·보증 오인
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(정부|국가|기관|전문가)\\s*.{0,8}\\s*(인증|승인|보장|보증)"}
+
+# ── [의료 보강 – 누락 문구 전용] MEDX-130~
+- id: MEDX-130
+  topic: 의료
+  severity: warn
+  rationale: 자사 강조(저희/우리 + 의료기관)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "(?<![가-힣A-Za-z0-9])(저희|우리)\\s*(병원|의원|센터|클리닉)?(?![가-힣A-Za-z0-9])"}
+
+- id: MEDX-131
+  topic: 의료
+  severity: block
+  rationale: 단 1회 시술·치료로 효과/유지 단정
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(단\\s*한\\s*번(?:의)?|1\\s*회)\\s*(?:만\\s*)?(시술|치료|진료)"}
+
+- id: MEDX-132
+  topic: 의료
+  severity: warn
+  rationale: 고통/통증 완화 속도 과장
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(통증|고통)\\s*(?:을|이|도)?\\s*.{0,12}\\s*(빠르\\w*|즉시|단번에|즉각)\\s*.{0,12}\\s*(줄\\w*|완화|감소|해결)"}
+
+- id: MEDX-133
+  topic: 의료
+  severity: warn
+  rationale: 효과의 강도 과장(현저히/뚜렷이/눈에 띄게)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(현저|뚜렷|눈에\\s*띄)\\w*\\s*.{0,12}\\s*(감소|개선|완화|회복)"}
+
+- id: MEDX-134
+  topic: 의료
+  severity: warn
+  rationale: 무위험·안심 시술 암시
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_RISK_DISCLOSE"]
+  patterns:
+    any:
+      - {type: regex, value: "안심하고\\s*(받|시술|치료|수술)"}
+      - {type: regex, value: "(걱정|우려)\\s*없\\w*\\s*(시술|치료|수술)"}
+
+- id: MEDX-135
+  topic: 의료
+  severity: block
+  rationale: 치료·완치 단정(낫는다/나아진다/완치된다)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "낫(는다|게\\s*하|었|았|었습|았습니다)"}
+      - {type: regex, value: "나아지(ㄴ다|었습니다|었어요|었다|어요|게)"}
+      - {type: regex, value: "완치되(ㄴ다|었다|었습니다|어요)"}
+      - {type: regex, value: "회복되(ㄴ다|었다|었습니다|어요)"}
+
+- id: MEDX-136
+  topic: 의료
+  severity: warn
+  rationale: 신뢰·믿음 호소(근거 없는 권위화)
+  legal_ref: "표시·광고의 공정화법"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "(신뢰|믿음|믿을\\s*수\\s*있)\\w+"}
+
+- id: MEDX-137
+  topic: 의료
+  severity: warn
+  rationale: 완전 소실 단정(사라졌다고/없어졌다)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SAFE_ALT"]
+  patterns:
+    any:
+      - {type: regex, value: "사라졌(다고|습니다|어요|다)"}
+      - {type: regex, value: "없어졌(다고|습니다|어요|다)"}
+
+- id: MEDX-138
+  topic: 의료
+  severity: warn
+  rationale: 실패 사례 강조(타기관 실패 → 우리 성공 암시)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:GEN_NEED_EVIDENCE"]
+  patterns:
+    any:
+      - {type: regex, value: "실패했\\w+\\s*.{0,16}\\s*(성공|호전|개선)"}
+      - {type: regex, value: "(다른\\s*병원|타\\s*병원).{0,16}(안되\\w*|실패).{0,16}(성공|해결)"}
+
+- id: MEDX-139
+  topic: 의료
+  severity: warn
+  rationale: 기간/속도 과장(단기간/빠른 회복/즉시 복귀)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(단기간|단\\s*시일|짧은\\s*기간)"}
+      - {type: regex, value: "(빠른|신속한|즉각적)\\s*(회복|퇴원|복귀)"}
+
+- id: MEDX-140
+  topic: 의료
+  severity: warn
+  rationale: 외형·피부 결과 과장(깨끗/매끈/탱탱)
+  legal_ref: "의료광고 심의기준"
+  actions: ["suggest:MED_SET_EXPECT"]
+  patterns:
+    any:
+      - {type: regex, value: "(깨끗하게|말끔하게|깨끗해지\\w+)"}
+      - {type: regex, value: "(매끈하\\w*|탱탱하\\w*|탄탄하\\w*).{0,12}(효과|변화|개선|된다)"}

@@ -1,0 +1,133 @@
+// src/components/HeaderBar.jsx
+import React, { useEffect, useState } from "react";
+import { api, fetchMe, getSavedId, getAutoLogin, login, logout } from "../auth";
+
+export default function HeaderBar() {
+  const [me, setMe] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showLogin, setShowLogin] = useState(false);
+
+  // 로그인 폼 상태
+  const [username, setUsername] = useState(getSavedId() || "");
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(!!getSavedId());
+  const [autoLogin, setAutoLogin] = useState(getAutoLogin());
+  const [err, setErr] = useState("");
+
+  async function refreshMe() {
+    setLoading(true);
+    try {
+      const m = await fetchMe();
+      setMe(m);
+      setShowLogin(false);
+    } catch {
+      setMe(null);
+      setShowLogin(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refreshMe();
+  }, []);
+
+  async function doLogin(e) {
+    e?.preventDefault();
+    setErr("");
+    try {
+      const m = await login({ username, password, auto: autoLogin, remember });
+      setMe(m);
+      setPassword("");
+      setShowLogin(false);
+    } catch (e2) {
+      setErr(e2?.response?.data?.error || "로그인 실패");
+    }
+  }
+
+  function doLogout() {
+    logout();
+    setMe(null);
+    setShowLogin(true);
+  }
+
+  return (
+    <>
+      {/* 상단바 */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12,
+        padding: "10px 14px", background: "#111827", color: "white"
+      }}>
+        <div style={{ fontWeight: 700 }}>Glefit</div>
+        <div style={{ marginLeft: "auto" }}>
+          {loading ? (
+            <span>확인중…</span>
+          ) : me ? (
+            <span style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
+              <span>👤 {me.username}</span>
+              <span title={me.paid_until}>
+                ⏳ {me.remaining_days}일 남음
+              </span>
+              <button onClick={doLogout}
+                style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #374151", background: "#1f2937", color: "#fff", cursor: "pointer" }}>
+                로그아웃
+              </button>
+            </span>
+          ) : (
+            <button onClick={() => setShowLogin(true)}
+              style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #374151", background: "#1f2937", color: "#fff", cursor: "pointer" }}>
+              로그인
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 로그인 모달 */}
+      {showLogin && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999
+        }}>
+          <form onSubmit={doLogin} style={{
+            width: 360, background: "white", borderRadius: 12, padding: 18,
+            boxShadow: "0 15px 40px rgba(0,0,0,0.2)"
+          }}>
+            <h3 style={{ margin: 0, marginBottom: 10 }}>로그인</h3>
+            <div style={{ display: "grid", gap: 10 }}>
+              <input
+                placeholder="아이디"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
+              />
+              <input
+                type="password"
+                placeholder="비밀번호"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                style={{ padding: 10, borderRadius: 8, border: "1px solid #d1d5db" }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                <label><input type="checkbox"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)} /> 아이디 저장</label>
+                <label><input type="checkbox"
+                  checked={autoLogin}
+                  onChange={(e) => setAutoLogin(e.target.checked)} /> 자동 로그인</label>
+              </div>
+              {err && <div style={{ color: "#dc2626", fontSize: 13 }}>{err}</div>}
+              <button type="submit"
+                style={{ padding: "10px 12px", borderRadius: 8, background: "#111827", color: "white", border: "none", cursor: "pointer" }}>
+                로그인
+              </button>
+              <button type="button" onClick={() => (setShowLogin(false))}
+                style={{ padding: "8px 10px", borderRadius: 8, background: "#f3f4f6", border: "1px solid #e5e7eb", cursor: "pointer" }}>
+                취소
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
+  );
+}
