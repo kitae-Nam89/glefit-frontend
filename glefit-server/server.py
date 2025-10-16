@@ -120,6 +120,13 @@ def migrate_users_table():
     except Exception:
         pass
 
+    # def migrate_users_table(): 내부 적절한 위치
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN allow_concurrent INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+
     conn.commit()
     conn.close()
 
@@ -189,17 +196,23 @@ def require_user(fn):
         tok_ver  = int(data.get("ver", 0) or 0)
         tok_jti  = data.get("jti","") or ""
 
-        # DB에서 최신 상태(활성/기간/사이트/버전/JTI) 확인
+                # DB에서 최신 상태(활성/기간/사이트/버전/JTI/동시접속) 확인
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT is_active, paid_until, site_url, token_version, last_jti FROM users WHERE username=?", (username,))
+        cur.execute(
+            "SELECT is_active, paid_until, site_url, token_version, last_jti, allow_concurrent "
+            "FROM users WHERE username=?",
+            (username,)
+        )
         row = cur.fetchone()
         conn.close()
 
         if not row:
             return jsonify({"error":"Unauthorized"}), 401
 
-        is_active, paid_until, site_url, db_ver, db_jti = row[0], row[1], (row[2] or ""), int(row[3] or 0), (row[4] or "")
+        is_active, paid_until, site_url, db_ver, db_jti, allow_concurrent = (
+            row[0], row[1], (row[2] or ""), int(row[3] or 0), (row[4] or ""), bool(row[5])
+        )
 
         # 결제/기간/활성 체크
         try:
@@ -208,9 +221,10 @@ def require_user(fn):
         except Exception:
             return jsonify({"error":"Payment required or expired"}), 402
 
-        # ★ 단일 로그인 강제: 토큰의 ver/jti가 DB의 최신값과 일치해야 통과
-        if tok_ver != db_ver or (db_jti and tok_jti != db_jti):
-            return jsonify({"error":"Session invalidated. Please log in again.", "code":"SESSION"}), 401
+        # 단일 로그인 강제: 동시접속 허용이 아닐 때만 버전/JTI 검증
+        if not allow_concurrent:
+            if tok_ver != db_ver or (db_jti and tok_jti != db_jti):
+                return jsonify({"error":"Session invalidated. Please log in again.", "code":"SESSION"}), 401
 
         # 도메인 제한(옵션)
         if site_url:
@@ -241,14 +255,20 @@ def require_admin(fn):
 
         conn = sqlite3.connect(DB_PATH)
         cur  = conn.cursor()
-        cur.execute("SELECT role, is_active, paid_until, token_version, last_jti FROM users WHERE username=?", (username,))
+        cur.execute(
+            "SELECT role, is_active, paid_until, token_version, last_jti, allow_concurrent "
+            "FROM users WHERE username=?",
+            (username,)
+        )
         row = cur.fetchone()
         conn.close()
 
         if not row:
             return jsonify({"error":"Unauthorized"}), 401
 
-        role, is_active, paid_until, db_ver, db_jti = (row[0] or "user"), row[1], row[2], int(row[3] or 0), (row[4] or "")
+        role, is_active, paid_until, db_ver, db_jti, allow_concurrent = (
+            (row[0] or "user"), row[1], row[2], int(row[3] or 0), (row[4] or ""), bool(row[5])
+        )
 
         # 결제/기간/활성 체크
         try:
@@ -257,9 +277,10 @@ def require_admin(fn):
         except Exception:
             return jsonify({"error":"Payment required or expired"}), 402
 
-        # 단일 로그인 강제
-        if tok_ver != db_ver or (db_jti and tok_jti != db_jti):
-            return jsonify({"error":"Session invalidated. Please log in again.", "code":"SESSION"}), 401
+        # 단일 로그인 강제 — 허용 계정은 예외
+        if not allow_concurrent:
+            if tok_ver != db_ver or (db_jti and tok_jti != db_jti):
+                return jsonify({"error":"Session invalidated. Please log in again.", "code":"SESSION"}), 401
 
         if role != "admin":
             return jsonify({"error":"Admin only"}), 403
@@ -727,10 +748,10 @@ import re
 app = Flask(__name__)
 
 ALLOWED_ORIGINS = [
-    "https://glefit-frontend.vercel.app",   # 프로덕션(필요시 실제 프로젝트 도메인으로 교체)
-    re.compile(r"https://.*\.vercel\.app"), # 프리뷰 배포 전부 허용  ← 점(.) 이스케이프 필수!
-    "http://localhost:3000",                # 로컬
-    "https://nuttern-running-aggregate-insights.trycloudflare.com",  # 터널 주소
+    "https://glefit-frontend.vercel.app",     # 실제 프로덕션 도메인으로 교체 가능
+    re.compile(r"https://.*\.vercel\.app"),   # 모든 Vercel 프리뷰
+    re.compile(r"https://.*\.trycloudflare\.com"),  # ✅ 모든 Cloudflare Quick Tunnel 허용
+    "http://localhost:3000",
 ]
 
 CORS(
@@ -753,17 +774,25 @@ def auth_login():
     if not _is_paid_and_active(u):
         return jsonify({"error":"Payment required", "code":"PAYMENT"}), 402
 
-    # (단일 로그인용 버전/토큰ID 업데이트)
+        # (단일 로그인용 버전/토큰ID 업데이트) — 동시접속 허용 계정은 예외
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT token_version FROM users WHERE username=?", (username,))
+    cur.execute("SELECT token_version, allow_concurrent FROM users WHERE username=?", (username,))
     row = cur.fetchone()
     cur_ver = int((row[0] if row else 0) or 0)
+    allow_concurrent = bool(row[1]) if row and row[1] is not None else False
 
-    new_ver = cur_ver + 1
-    new_jti = str(uuid.uuid4())
-    cur.execute("UPDATE users SET token_version=?, last_jti=? WHERE username=?", (new_ver, new_jti, username))
-    conn.commit()
+    if allow_concurrent:
+        new_ver = cur_ver
+        new_jti = ""
+    else:
+        new_ver = cur_ver + 1
+        new_jti = str(uuid.uuid4())
+        cur.execute(
+            "UPDATE users SET token_version=?, last_jti=? WHERE username=?",
+            (new_ver, new_jti, username)
+        )
+        conn.commit()
     conn.close()
 
     token = jwt.encode({
@@ -922,6 +951,33 @@ def admin_set_active():
     conn.commit(); conn.close()
     return jsonify({"ok": True})
 
+@app.route("/admin/set_allow_concurrent", methods=["POST"])
+@require_admin
+def admin_set_allow_concurrent():
+    body = request.get_json(force=True, silent=True) or {}
+    username = (body.get("username") or "").strip()
+    allow = 1 if body.get("allow") else 0
+    if not username:
+        return jsonify({"error": "username required"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    if allow:
+        # 허용: 그대로 플래그만 켜기
+        cur.execute(
+            "UPDATE users SET allow_concurrent=? WHERE username=?",
+            (allow, username)
+        )
+    else:
+        # 해제: 기존 세션 무효화를 위해 버전++ 및 새로운 jti 세팅
+        import uuid
+        new_jti = str(uuid.uuid4())
+        cur.execute(
+            "UPDATE users SET allow_concurrent=?, token_version=token_version+1, last_jti=? WHERE username=?",
+            (allow, new_jti, username)
+        )
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "username": username, "allow_concurrent": bool(allow)})
+
 @app.route("/admin/reset_password", methods=["POST"])
 @require_admin
 def admin_reset_password():
@@ -978,13 +1034,20 @@ def admin_list_users():
     q = (request.args.get("q") or "").strip()
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
     if q:
-        cur.execute("SELECT username,is_active,paid_until,role,notes,site_url,created_at FROM users WHERE username LIKE ? ORDER BY username", (f"%{q}%",))
+        cur.execute(
+            "SELECT username,is_active,paid_until,role,notes,site_url,created_at,allow_concurrent "
+            "FROM users WHERE username LIKE ? ORDER BY username",
+            (f"%{q}%",)
+        )
     else:
-        cur.execute("SELECT username,is_active,paid_until,role,notes,site_url,created_at FROM users ORDER BY username")
+        cur.execute(
+            "SELECT username,is_active,paid_until,role,notes,site_url,created_at,allow_concurrent "
+            "FROM users ORDER BY username"
+        )
     rows = cur.fetchall()
     conn.close()
     out = []
-    for u,a,pu,r,nt,site,created in rows:
+    for u,a,pu,r,nt,site,created,ac in rows:
         out.append({
             "username": u,
             "is_active": bool(a),
@@ -993,7 +1056,8 @@ def admin_list_users():
             "role": r,
             "note": nt,
             "site_url": site,
-            "created_at": created
+            "created_at": created,
+            "allow_concurrent": bool(ac),   # ★ 추가
         })
     return jsonify({"users": out})
 
@@ -1314,6 +1378,65 @@ def health():
             "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local","/health"
         ]
     })
+
+# === 4) 관리자: 기간 조정 API ===
+# 위치: (① /admin/approve 아래) 또는 (② if __name__ == "__main__": 바로 위)
+
+@app.route("/admin/adjust_days", methods=["POST"])
+@require_admin
+def admin_adjust_days():
+    """
+    body: { "username": "trial@glefit", "days": -1 }  # 음수/양수 모두 허용
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    username   = (body.get("username") or "").strip()
+    delta_days = int(body.get("days") or 0)
+    if not username or delta_days == 0:
+        return jsonify({"error": "username/days required"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT paid_until FROM users WHERE username=?", (username,))
+    row = cur.fetchone()
+    if not row:
+        conn.close(); return jsonify({"error":"user not found"}), 404
+
+    now = datetime.utcnow()
+    try:
+        base = datetime.fromisoformat(row[0]) if row[0] else now
+    except Exception:
+        base = now
+
+    new_until = base + timedelta(days=delta_days)
+    cur.execute(
+        "UPDATE users SET paid_until=?, is_active=? WHERE username=?",
+        (new_until.isoformat(), 1 if new_until > now else 0, username)
+    )
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "paid_until": new_until.isoformat()})
+
+
+@app.route("/admin/set_days_from_now", methods=["POST"])
+@require_admin
+def admin_set_days_from_now():
+    """
+    body: { "username": "trial@glefit", "days": 7 }  # 0 허용(즉시 만료)
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    username = (body.get("username") or "").strip()
+    days     = int(body.get("days") or 0)
+    if not username:
+        return jsonify({"error":"username required"}), 400
+
+    now = datetime.utcnow()
+    new_until = now + timedelta(days=max(0, days))
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute(
+        "UPDATE users SET paid_until=?, is_active=? WHERE username=?",
+        (new_until.isoformat(), 1 if days > 0 else 0, username)
+    )
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "paid_until": new_until.isoformat()})
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))

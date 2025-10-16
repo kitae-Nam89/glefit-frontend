@@ -315,9 +315,17 @@ export default function AdminPage() {
             <input className="w-full border rounded-lg px-3 py-2" placeholder="예: https://partner.example.com" value={fUser.site_url} onChange={(e)=>setFUser(v=>({...v, site_url:e.target.value}))} />
           </div>
           <div className="md:col-span-2">
-            <label className="text-sm text-gray-600">메모 (업체명/담당자 등)</label>
-            <input className="w-full border rounded-lg px-3 py-2" value={fUser.note} onChange={(e)=>setFUser(v=>({...v, note:e.target.value}))} />
-          </div>
+  <label className="text-sm text-gray-600">메모 (업체명/담당자 등)</label>
+  <textarea
+    className="w-full border rounded-lg px-3 py-2 whitespace-pre-wrap break-words resize-y"
+    rows={6}
+    placeholder="예) ○○병원 / 담당자 홍길동 010-1234-5678 / 특이사항…"
+    value={fUser.note}
+    onChange={(e)=>setFUser(v=>({...v, note:e.target.value}))}
+    style={{ minHeight: 120, lineHeight: 1.5 }}
+  />
+  <div className="text-right text-xs text-gray-500">{fUser.note?.length || 0}자</div>
+</div>
         </div>
         <div className="flex items-center gap-3">
           <button type="submit" disabled={actionLoading} className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-60">{actionLoading?"처리중...":"발급 / 연장 실행"}</button>
@@ -341,9 +349,10 @@ export default function AdminPage() {
               <tr className="bg-gray-50 text-sm">
                 <th className="p-2 border w-48">아이디</th>
                 <th className="p-2 border w-20">활성</th>
+                <th className="p-2 border w-24">동시</th>
                 <th className="p-2 border w-24">남은일수</th>
                 <th className="p-2 border w-40">만료일</th>
-                <th className="p-2 border w-72">메모</th>
+                <th className="p-2 border w-[560px]">메모</th>
                 <th className="p-2 border w-[420px]">글핏주소</th>
                 <th className="p-2 border w-40">생성일</th>
                 <th className="p-2 border w-64">작업</th>
@@ -351,43 +360,110 @@ export default function AdminPage() {
             </thead>
             <tbody>
               {listLoading ? (
-                <tr><td className="p-4 text-center" colSpan={8}>불러오는 중...</td></tr>
-              ) : rows.length === 0 ? (
-                <tr><td className="p-6 text-center text-gray-500" colSpan={8}>데이터 없음</td></tr>
-              ) : (
+  <tr><td className="p-4 text-center" colSpan={9}>불러오는 중...</td></tr>
+) : rows.length === 0 ? (
+  <tr><td className="p-6 text-center text-gray-500" colSpan={9}>데이터 없음</td></tr>
+) : (
                 rows.map((u) => (
                   <tr key={u.username} className="text-sm hover:bg-gray-50">
-                    <td className="p-2 border font-mono">{u.username}</td>
-                    <td className="p-2 border">
-                      <label className="inline-flex items-center gap-2 cursor-pointer">
-                        <input type="checkbox" checked={!!u.is_active} onChange={(e)=>onToggleActive(u, e.target.checked)} />
-                        <span>{u.is_active?"ON":"OFF"}</span>
-                      </label>
-                    </td>
-                    <td className="p-2 border text-center">
-                      <span className={u.remaining_days<=3?"text-red-600 font-semibold":""}>{u.remaining_days}</span>
-                    </td>
-                    <td className="p-2 border">{fmtDate(u.paid_until)}</td>
-                    <td className="p-2 border max-w-[280px] truncate" title={u.note||"-"}>{u.note||"-"}</td>
-                    <td className="p-2 border max-w-[480px] truncate" title={u.site_url||"-"}>{u.site_url||"-"}</td>
-                    <td className="p-2 border">{fmtDate(u.created_at)}</td>
-                    <td className="p-2 border">
-                      <div className="flex flex-wrap gap-2">
-                        <button className="px-2 py-1 border rounded" onClick={() => setFUser(v=>({...v, username:u.username}))}>연장 대상</button>
-                        <button className="px-2 py-1 border rounded" onClick={() => onResetPassword(u)}>비번초기화</button>
-                        <button className="px-2 py-1 border rounded" onClick={() => {
-                          const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
-                          if (!add) return;
-                          setActionLoading(true);
-                          axios.post(`${API_BASE}/admin/issue_user`, { username: u.username, days: add, note: "+연장" })
-                            .then(()=>refreshList())
-                            .finally(()=>setActionLoading(false));
-                        }}>+연장</button>
-                        {/* ▶ 삭제 버튼 추가 */}
-                        <button className="px-2 py-1 border rounded text-red-600" onClick={() => onDeleteUser(u)}>삭제</button>
-                      </div>
-                    </td>
-                  </tr>
+  <td className="p-2 border font-mono">{u.username}</td>
+
+  {/* 활성 */}
+  <td className="p-2 border">
+    <label className="inline-flex items-center gap-2 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={!!u.is_active}
+        onChange={(e)=>onToggleActive(u, e.target.checked)}
+      />
+      <span>{u.is_active ? "ON" : "OFF"}</span>
+    </label>
+  </td>
+
+  {/* 동시접속 허용 */}
+  <td className="p-2 border">
+    <label className="inline-flex items-center gap-2 cursor-pointer" title="동시접속 허용">
+      <input
+        type="checkbox"
+        checked={!!u.allow_concurrent}
+        onChange={async (e) => {
+          try {
+            setActionLoading(true);
+            await axios.post(`${API_BASE}/admin/set_allow_concurrent`, {
+              username: u.username,
+              allow: e.target.checked
+            });
+            await refreshList();
+          } finally {
+            setActionLoading(false);
+          }
+        }}
+      />
+      <span>{u.allow_concurrent ? "허용" : "차단"}</span>
+    </label>
+  </td>
+
+  {/* 남은일수 */}
+  <td className="p-2 border text-center">
+    <span className={u.remaining_days<=3 ? "text-red-600 font-semibold" : ""}>
+      {u.remaining_days}
+    </span>
+  </td>
+
+  {/* 만료일 */}
+  <td className="p-2 border">{fmtDate(u.paid_until)}</td>
+
+  {/* 메모 */}
+  <td className="p-2 border whitespace-pre-wrap break-words max-w-[560px]">
+    {u.note?.trim() ? u.note : "-"}
+  </td>
+
+  {/* 글핏주소 */}
+  <td className="p-2 border max-w-[480px] truncate" title={u.site_url || "-"}>
+    {u.site_url || "-"}
+  </td>
+
+  {/* 생성일 */}
+  <td className="p-2 border">{fmtDate(u.created_at)}</td>
+
+  {/* 작업 */}
+  <td className="p-2 border">
+    <div className="flex flex-wrap gap-2">
+      <button
+        className="px-2 py-1 border rounded"
+        onClick={() => setFUser(v=>({...v, username:u.username}))}
+      >
+        연장 대상
+      </button>
+      <button
+        className="px-2 py-1 border rounded"
+        onClick={() => onResetPassword(u)}
+      >
+        비번초기화
+      </button>
+      <button
+        className="px-2 py-1 border rounded"
+        onClick={() => {
+          const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
+          if (!add) return;
+          setActionLoading(true);
+          axios.post(`${API_BASE}/admin/issue_user`, { username: u.username, days: add, note: "+연장" })
+            .then(()=>refreshList())
+            .finally(()=>setActionLoading(false));
+        }}
+      >
+        +연장
+      </button>
+      <button
+        className="px-2 py-1 border rounded text-red-600"
+        onClick={() => onDeleteUser(u)}
+      >
+        삭제
+      </button>
+    </div>
+  </td>
+</tr>
+
                 ))
               )}
             </tbody>
