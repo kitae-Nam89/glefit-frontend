@@ -34,3 +34,4 @@ glefit-server/.venv/
 glefit-server/Lib/
 glefit-server/Include/
 glefit-server/__pycache__/
+glefit-server/rewrite.db 
