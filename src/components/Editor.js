@@ -37,12 +37,9 @@ function setToken(token, { auto = false } = {}) {
 }
 
 function clearToken() {
-  try {
-    localStorage.removeItem(AUTH_KEY_LOCAL);
-  } catch (e) {}
-  try {
-    sessionStorage.removeItem(AUTH_KEY_SESS);
-  } catch (e) {}
+  try { localStorage.removeItem(AUTH_KEY_LOCAL); } catch (e) {}
+  try { sessionStorage.removeItem(AUTH_KEY_SESS); } catch (e) {}
+  try { localStorage.removeItem(AUTO_LOGIN_KEY); } catch (e) {}
 }
 
 function getSavedId() {
@@ -259,12 +256,16 @@ function mergeResultsPositionAware(results, overlapThreshold = 0.8) {
 export default function Editor() {
   // [ADD] login hooks
   // [LOGIN UI 상태]
-  const [token, setTokenState] = useState(() => getToken());
-  const [loginU, setLoginU] = useState(getSavedId() || "");
-  const [loginP, setLoginP] = useState("");
-  const [rememberId, setRememberId] = useState(!!getSavedId());
-  const [autoLogin, setAutoLogin] = useState(getAutoLogin());
-  const [loginErr, setLoginErr] = useState("");
+const [token, setTokenState] = useState(() => getToken());
+const [loginU, setLoginU] = useState(getSavedId() || "");
+const [loginP, setLoginP] = useState("");
+const [rememberId, setRememberId] = useState(!!getSavedId());
+const [autoLogin, setAutoLogin] = useState(getAutoLogin());
+const [loginErr, setLoginErr] = useState("");
+
+// ⬇⬇ 추가: 게스트(체험) 모드 스위치
+const [guestMode, setGuestMode] = useState(false);
+
 
   // [상단 표시용 내 정보]
   const [me, setMe] = useState(undefined);
@@ -295,6 +296,24 @@ export default function Editor() {
     cursor: "not-allowed",
     filter: "grayscale(0.6)",
   };
+
+const [showNoticeModal, setShowNoticeModal] = useState(false);
+
+// === 업로드 제한 상수/유틸 ===
+const MAX_FILES_USER = 50;           // 일반
+const MAX_FILES_GUEST = 3;           // 체험(비로그인/게스트)
+const isGuest = guestMode || !token; // 게스트 모드이거나 토큰 없으면 게스트
+const canUploadUnlimited = !!isAdmin; // 관리자는 무제한
+
+function clampUploadList(list = []) {
+  if (canUploadUnlimited) return list;
+  const limit = isGuest ? MAX_FILES_GUEST : MAX_FILES_USER;
+  if (list.length > limit) {
+    alert(`업로드 제한: ${isGuest ? "체험 계정" : "일반 계정"}은 최대 ${limit}건까지 가능합니다.`);
+    return list.slice(0, limit);
+  }
+  return list;
+}
 
   // /auth/me 호출
   async function fetchMe() {
@@ -334,11 +353,21 @@ export default function Editor() {
   }
 
   function doLogout() {
-    clearToken();
-    delete axios.defaults.headers.common["Authorization"];
-    setTokenState("");
-    setMe(null);
-  }
+   try {
+     // 1) 모든 토큰/자동로그인 흔적 제거
+     clearToken();
+     if (axios?.defaults?.headers?.common) {
+       delete axios.defaults.headers.common["Authorization"];
+     }
+     // 2) 상태를 즉시 게스트로
+     setTokenState("");
+     setMe(null);
+     setGuestMode(true);
+   } finally {
+     // 3) 현재 경로로 하드 리로드(부팅 토큰 로직 재평가)
+     window.location.replace(window.location.pathname);
+   }
+ }
 
   const [text, setText] = useState("");
   const [highlightedHTML, setHighlightedHTML] = useState(""); // 중앙 하이라이트 전용(합본)
@@ -557,7 +586,8 @@ if (onlySupported.length) {
 
 const handleFileInputChange = async (e) => {
   const list = Array.from(e.target.files || []);
-  await replaceAllFiles(list);
+  const limited = clampUploadList(list);
+  await replaceAllFiles(limited);
 };
 
 const handleDrop = async (e) => {
@@ -568,7 +598,8 @@ const handleDrop = async (e) => {
   if ((!all || !all.length) && e.dataTransfer.files?.length) {
     all = Array.from(e.dataTransfer.files);
   }
-  await replaceAllFiles(all);
+  const limited = clampUploadList(all || []);
+  await replaceAllFiles(limited);
 };
 
 const handleDragOver = (e) => e.preventDefault();
@@ -766,13 +797,23 @@ const generateHighlightedHTML = (raw, matches, keywords, terms) => {
 const handleCheck = async () => {
   try {
     setIsChecking(true);
+    // === 캐시 재사용: 텍스트/파일명 동일하면 서버 호출 스킵 ===
+    const cur = files[fileIndex];
+    const fname = cur?.name || "";
+    const cached = fname && fileResults?.[fname];
+    if (cached && (cached.text || "") === (text || "")) {
+      // 캐시된 화면 상태 복원
+      setResultsVerify(cached.verify || []);
+      setResultsPolicy(cached.policy || []);
+      setResults(mergeResultsPositionAware([...(cached.verify||[]), ...(cached.policy||[])]));
+      setHighlightedHTML(cached.highlightedHTML || "");
+      setAiSummary(cached.aiSummary || null);
+      return; // 서버 호출 생략
+    }
+
     const res = await axios.post(`${API_BASE}/verify`, { text });
     const payload = res.data || {};
     const data = Array.isArray(payload.results) ? payload.results : [];
-
-    // 현재 파일명
-    const cur = files[fileIndex];
-    const fname = cur?.name;
 
     // 🔴 현재 파일의 policy 결과는 유지하면서 verify만 갱신
     setResultsVerify(data);
@@ -812,8 +853,9 @@ const handleCheck = async () => {
       }));
     }
   } catch (e) {
-    alert("검사 실패: " + (e?.message || "Unknown error"));
-  } finally {
+  try { navigator.sendBeacon?.(`${API_BASE}/log/client_error`, JSON.stringify({ where:"handleCheck", msg: String(e?.message||e), time: Date.now() })); } catch {}
+  alert("검사 실패: " + (e?.message || "Unknown error"));
+} finally {
     setIsChecking(false);
   }
 };
@@ -821,11 +863,22 @@ const handleCheck = async () => {
 const handlePolicyCheck = async () => {
   try {
     setIsChecking(true);
+    // === 캐시 재사용: 텍스트/파일명 동일하면 서버 호출 스킵 ===
+    const cur = files[fileIndex];
+    const fname = cur?.name || "";
+    const cached = fname && fileResults?.[fname];
+    if (cached && (cached.text || "") === (text || "")) {
+      setResultsVerify(cached.verify || []);
+      setResultsPolicy(cached.policy || []);
+      setResults(mergeResultsPositionAware([...(cached.verify||[]), ...(cached.policy||[])]));
+      setHighlightedHTML(cached.highlightedHTML || "");
+      setAiSummary(cached.aiSummary || null);
+      return; // 서버 호출 생략
+    }
+
     const res = await axios.post(`${API_BASE}/policy_verify`, { text });
     const payload = res.data || {};
     const data = Array.isArray(payload.results) ? payload.results : [];
-    const cur = files[fileIndex];
-    const fname = cur?.name;
 
     // 🔴 verify 유지 + policy 갱신
     setResultsPolicy(data);
@@ -1778,8 +1831,13 @@ const handleDedupPDFBoth = async () => {
 };
 
 // ========= (NEW) 단일 문서 내 중복문장/유사 =========
-const handleIntraDedup = async () => {
-  try {
+ const handleIntraDedup = async () => {
+   // 🔒 게스트 잠금: 한 문서 중복탐지 제한
+   if (isGuest) {
+     alert("체험(게스트)에서는 한 문서 중복탐지가 잠깁니다. 로그인 후 이용해주세요.");
+     return;
+   }
+   try {
     if (!text.trim()) return alert("텍스트가 비어 있습니다.");
 
     const res = await axios.post(`${API_BASE}/dedup_intra`, {
@@ -2120,6 +2178,105 @@ document.body.removeChild(holder);
 
 // ========= (NEW) 여러 문서 간 중복문장/유사 =========
 const handleInterDedup = async () => {
+  const localCompute = async (arr, lineIdxMap) => {
+    const MIN = Number(interMinLen) || 6;
+    const TH  = Number(interSimTh) || 0.88;
+
+    // 1) 문장 분할 (간단: 마침표/개행 기준) + 길이 필터
+    const split = (name, txt) => {
+      const s = String(txt || "");
+      const parts = s.split(/(?<=[\.!?。！？])\s+|\n+/g);
+      let off = 0;
+      const out = [];
+      for (const seg of parts) {
+        const t = seg || "";
+        const i = s.indexOf(seg, off);
+        if (i < 0) continue;
+        const j = i + seg.length;
+        off = j;
+        const core = t.replace(/\s+/g, "");
+        if (core.length >= MIN) {
+          out.push({
+            file: name,
+            original: t,
+            text: t,
+            start: i,
+            end: j,
+            line: lineNoFromIndex(lineIdxMap[name] || [], i),
+          });
+        }
+      }
+      return out;
+    };
+
+    // 2) 전 문서 문장 수집
+    const all = [];
+    for (const { name, text } of arr) all.push(...split(name, text));
+
+    // 3) 정확 중복: 정규화 키로 그룹
+    const canonMap = new Map();
+    for (const s of all) {
+      const key = canonKR(s.original || s.text || "");
+      if (!key) continue;
+      const v = canonMap.get(key) || [];
+      v.push({ file: s.file, line: s.line, start: s.start, original: s.original });
+      canonMap.set(key, v);
+    }
+    const exact_groups = Array.from(canonMap.values())
+      .filter((occ) => {
+        // 서로 다른 파일에서 최소 2회 이상
+        const files = new Set(occ.map(o => o.file));
+        return files.size >= 2;
+      })
+      .map((occ, idx) => ({ id: idx + 1, occurrences: occ }));
+
+    // 4) 유사 페어: 서로 다른 파일끼리만, Jaccard n-gram(3)
+    const pairs = [];
+    for (let i = 0; i < all.length; i++) {
+      for (let j = i + 1; j < all.length; j++) {
+        const A = all[i], B = all[j];
+        if (A.file === B.file) continue;
+        const a = A.original || A.text || "";
+        const b = B.original || B.text || "";
+        // 정확중복은 유사에서 제외
+        if (canonKR(a) === canonKR(b)) continue;
+        const score = jaccardByNgram(a, b, 3);
+        if (score >= TH) {
+          pairs.push({
+            a: { file: A.file, line: A.line, start: A.start, original: A.original },
+            b: { file: B.file, line: B.line, start: B.start, original: B.original },
+            score: Number(score.toFixed(3)),
+          });
+        }
+      }
+    }
+
+    // 5) 상태 반영 (UI 동일 구조)
+    setInterExactGroups(exact_groups);
+    setInterSimilarPairs(pairs);
+
+    // 유사 페어 클러스터링(완전동일 제외)
+    const simPairsNoExact = (pairs || []).filter((p) => {
+      const s = Number(p?.score ?? 0);
+      const a = p?.a?.original ?? p?.a?.text ?? "";
+      const b = p?.b?.original ?? p?.b?.text ?? "";
+      if (s >= 0.9995) return false;
+      if (canonKR(a) === canonKR(b)) return false;
+      return true;
+    });
+
+    const mergeTh = Number(interSimTh) || 0.70;
+    const repMergeTh = Math.max((Number(interSimTh) || 0.70) - 0.05, 0.65);
+    const groups = clusterSimilarPairs(simPairsNoExact, mergeTh, repMergeTh);
+    setInterSimilarGroups(groups);
+
+    if (!exact_groups.length && !simPairsNoExact.length) {
+      alert("교차 중복문장·유사 문장이 발견되지 않았습니다.");
+    } else {
+      alert("여러 문서 간 탐지를 완료했습니다.");
+    }
+  };
+
   try {
     if (!files.length) return alert("업로드된 파일이 없습니다.");
 
@@ -2132,7 +2289,13 @@ const handleInterDedup = async () => {
       lineIdxMap[name] = buildLineIndex(text || "");
     }
 
-    // 교차 탐지
+    // 🔓 모든 사용자 사용 가능: 게스트면 로컬 계산
+    if (isGuest) {
+      await localCompute(arr, lineIdxMap);
+      return;
+    }
+
+    // 회원/관리자: 서버 API 우선
     const res = await axios.post(`${API_BASE}/dedup_inter`, {
       files: arr,
       min_len: Number(interMinLen) || 6,
@@ -2140,7 +2303,7 @@ const handleInterDedup = async () => {
     });
     const payload = res.data || {};
 
-    // ⬇️ 서버에서 받은 start 오프셋을 "메모장 줄번호"로 변환해 주입
+    // 서버 응답에 줄번호 주입
     const withLinesExact = (payload.exact_groups || []).map((g) => ({
       ...g,
       occurrences: (g.occurrences || []).map((o) => ({
@@ -2164,19 +2327,17 @@ const handleInterDedup = async () => {
     setInterExactGroups(withLinesExact);
     setInterSimilarPairs(withLinesSim);
 
-    // [중복 제거] 1번(완전 동일)에서 잡힌 페어는 2번(유사)에서 제외
     const simPairsNoExact = (withLinesSim || []).filter((p) => {
       const s = Number(p?.score ?? 0);
       const a = p?.a?.original ?? p?.a?.text ?? "";
       const b = p?.b?.original ?? p?.b?.text ?? "";
-      if (s >= 0.9995) return false; // 점수상 완전 동일
-      if (canonKR(a) === canonKR(b)) return false; // 정규화 후 사실상 동일
+      if (s >= 0.9995) return false;
+      if (canonKR(a) === canonKR(b)) return false;
       return true;
     });
 
-    // UI에서 설정한 유사도(th)를 그대로 클러스터 병합 기준에 사용
-    const mergeTh = Number(interSimTh) || 0.70; // Union 임계값
-    const repMergeTh = Math.max((Number(interSimTh) || 0.70) - 0.05, 0.65); // 대표문장 병합
+    const mergeTh = Number(interSimTh) || 0.70;
+    const repMergeTh = Math.max((Number(interSimTh) || 0.70) - 0.05, 0.65);
     const groups = clusterSimilarPairs(simPairsNoExact, mergeTh, repMergeTh);
     setInterSimilarGroups(groups);
 
@@ -2184,10 +2345,20 @@ const handleInterDedup = async () => {
       alert("교차 중복문장·유사 문장이 발견되지 않았습니다.");
     }
   } catch (e) {
+    // 서버 실패(401 등) → 로컬 계산 폴백
     console.error(e);
-    alert("교차 중복 탐지 실패: " + (e?.message || "Unknown error"));
+    try {
+      const arr = await getAllFilesText();
+      const lineIdxMap = {};
+      for (const { name, text } of arr) lineIdxMap[name] = buildLineIndex(text || "");
+      await localCompute(arr, lineIdxMap);
+    } catch (ee) {
+      console.error(ee);
+      alert("교차 중복 탐지 실패: " + (ee?.message || "Unknown error"));
+    }
   }
 };
+
 // === [교체] 유사 페어를 "그룹(클러스터)"로 묶기: Union-Find + 대표문장 2차 병합 ===
 const clusterSimilarPairs = (pairs = [], mergeTh = 0.82, repMergeTh = 0.85) => {
   const parent = new Map();
@@ -2560,7 +2731,7 @@ const jumpToFileOffset = async (targetFileName, start, end, original = "", befor
 };
 
 // [ADD] login gate rendering (place BEFORE the main return)
-if (!token) {
+if (!token && !guestMode) {  // ← 게스트 모드일 때는 에디터로 진입
   return (
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f6f7fb" }}>
       <form
@@ -2574,7 +2745,10 @@ if (!token) {
           boxShadow: "0 6px 20px rgba(0,0,0,0.06)",
         }}
       >
-        <h2 style={{ marginTop: 0 }}>글핏 (신규 문의 kakao : txt365)</h2>
+        <h2 style={{ marginTop: 0 }}>글핏</h2>
+        <p style={{ marginTop: 6, fontSize: 13, color: "#374151" }}>
+          문의 카카오 <b>txt365</b> · 계정당 월 무제한 <b>22,000원</b>
+        </p>
 
         <div style={{ marginBottom: 12 }}>
           <input
@@ -2623,13 +2797,258 @@ if (!token) {
           로그인
         </button>
 
+        {/* ───── 추가: 구분선 + 데모 체험 버튼/안내 ───── */}
+        <div style={{ margin: "10px 0", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>또는</div>
+
+        <button
+          type="button"
+          onClick={() => setGuestMode(true)}
+          style={{ width: "100%", padding: "10px", borderRadius: 8, border: "1px solid #d1d5db", background: "#f9fafb" }}
+          title="체험판: 업로드 3건, 단어찾기/다문서 중복만 가능, 보고서 저장 불가"
+        >
+          데모 체험(제한 모드)
+        </button>
+
         <p style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
-          ※ 입금 승인된 계정만 사용 가능합니다.
+            ※ 체험판은 로그인 없이 사용 가능: 업로드 3건 / 단어찾기·다문서 중복
+        </p>
+        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+            ※ 입금 승인된 계정만 사용 가능합니다.
+        </p>
+        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+            ※ 환불은 불가하며, 서비스 사용 내역(검사 횟수·파일 수)이 기록됩니다. 결제 전 반드시 데모 체험으로 확인하세요.
+        </p>
+        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+            ※ 1계정 1접속만 가능합니다. 계정 공유·대여 시 이용이 제한됩니다.
+        </p>
+        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+            ※ 모든 검수 결과는 참고용이며, 최종 게시 전 담당자의 확인이 필요합니다.
         </p>
       </form>
     </div>
   );
 }
+
+// === 로그인 게이트: 토큰 없으면 좌(미리보기) + 우(공지) 노출 ===
+if (!token && !guestMode) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        gridTemplateColumns: "1fr 420px",
+        gap: 24,
+        background: "#eef2f7",
+        padding: 24,
+      }}
+    >
+      {/* 좌: 글핏 UI 미리보기 (읽기 전용 캡처 스타일) */}
+      <div
+        style={{
+          position: "relative",
+          borderRadius: 16,
+          overflow: "hidden",
+          border: "1px solid #e5e7eb",
+          background: "#fff",
+        }}
+      >
+        <div
+          style={{
+            padding: 16,
+            borderBottom: "1px solid #f0f2f5",
+            fontWeight: 700,
+          }}
+        >
+          Glefit 미리보기
+        </div>
+        <div style={{ padding: 16, opacity: 0.9 }}>
+          {/* 실제 편집 UI의 요약 프리뷰(정적) — 텍스트/버튼은 클릭 불가 */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr 1fr",
+              gap: 12,
+            }}
+          >
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                padding: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                키워드·단어찾기
+              </div>
+              <div style={{ fontSize: 12, color: "#555" }}>
+                파일명에서 키워드 자동 추출 · 등장 횟수 집계
+              </div>
+            </div>
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                padding: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                중복문장(단일/다문서)
+              </div>
+              <div style={{ fontSize: 12, color: "#555" }}>
+                타이트~느슨 감도 조절 · 교차 그룹 보기
+              </div>
+            </div>
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 8,
+                padding: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                심의 리스크
+              </div>
+              <div style={{ fontSize: 12, color: "#555" }}>
+                식약처/보건복지부/공정위 가이드 기반 규칙
+              </div>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
+            ※ 데모 체험: 업로드 3건, 단어찾기/다문서 중복 검사만 사용
+            가능. 보고서 저장/맞춤법·문맥/전체검사 제한.
+          </div>
+        </div>
+      </div>
+
+      {/* 우: 로그인/공지/규정 */}
+      <div
+        style={{
+          borderRadius: 16,
+          border: "1px solid #e5e7eb",
+          background: "#fff",
+          padding: 16,
+        }}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <form onSubmit={doLogin}>
+            {/* === 아이디/비밀번호/체크박스/에러/로그인버튼 — 기존 코드 그대로 삽입 === */}
+          </form>
+        </div>
+
+        <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>
+            공지 & 서비스 소개
+          </div>
+          <ul
+            style={{
+              margin: 0,
+              paddingLeft: 16,
+              fontSize: 13,
+              lineHeight: 1.6,
+            }}
+          >
+            <li>월정액 ID 단위 사용 (관리자 승인 후 이용)</li>
+            <li>
+              주요 기능: 글자수/키워드 횟수, 금칙어, 중복문장(단일/다문서), 심의
+              리스크, TXT/DOCX/PDF 보고서
+            </li>
+          </ul>
+
+          <div style={{ marginTop: 10, fontWeight: 700, marginBottom: 6 }}>
+            환불 규정 요약
+          </div>
+          <div style={{ fontSize: 12, color: "#555" }}>
+            검사 사용량(횟수/파일수) 기록을 근거로 환불 불가 원칙을 적용합니다.
+            결제 전 데모 체험으로 충분히 테스트하세요.
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowNoticeModal(true)}
+            style={{
+              marginTop: 12,
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: "1px solid #d1d5db",
+              background: "#f9fafb",
+            }}
+          >
+            서비스 규정 전문 보기
+          </button>
+        </div>
+      </div>
+
+      {/* [ADD] 로그인 화면 하단 고정 안내 — 그리드 안(두 칼럼 전체) */}
+      <div style={{ gridColumn: "1 / -1", marginTop: 12 }}>
+        <div
+          style={{
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+            background: "#fffdf7",
+            padding: "10px 12px",
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: "#444",
+          }}
+        >
+          <b className="mr-2">⚠️ 안내</b>
+          체험판은 업로드 3건 제한 · 보고서 저장 불가입니다. 유료 결제 후 환불은
+          불가하며, 모든 검수 결과는 참고용으로 최종 책임은 사용자에게 있습니다.
+          계정 공유/대여 시 이용이 제한될 수 있습니다.
+        </div>
+      </div>
+
+      {/* 모달 */}
+      {showNoticeModal && (
+        <div
+          onClick={() => setShowNoticeModal(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "grid",
+            placeItems: "center",
+            zIndex: 9999,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: 720,
+              maxWidth: "90vw",
+              maxHeight: "80vh",
+              overflow: "auto",
+              borderRadius: 12,
+              background: "#fff",
+              padding: 20,
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>서비스 이용 규정 (전문)</h3>
+            <p style={{ color: "#444", fontSize: 14, lineHeight: 1.7 }}>
+              {/* 규정 전문 HTML/문구 또는 별도 페이지 iframe 삽입 가능 */}
+              관리자 공지에서 수정/연결 가능하도록 차후 확장 예정.
+            </p>
+            <div style={{ textAlign: "right" }}>
+              <button
+                onClick={() => setShowNoticeModal(false)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #d1d5db",
+                  background: "#f9fafb",
+                }}
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ========= 렌더 =========
 return (
   <>
@@ -2715,8 +3134,21 @@ return (
             {" · 만료 "}
 {me?.paid_until?.slice(0, 10)}
 {typeof me?.remaining_days === "number" && (
-  <span>{` (${me.remaining_days}일 남음)`}</span>
+  <>
+    <span>{` (${me.remaining_days}일 남음)`}</span>
+    <div style={{ marginTop: 6, width: 160, height: 6, background: "rgba(255,255,255,0.18)", borderRadius: 6, overflow: "hidden" }}>
+      <div
+        style={{
+          height: "100%",
+          width: `${Math.max(0, Math.min(100, (me.remaining_days_ratio ?? (me.remaining_days/30))*100))}%`,
+          background: "#22c55e"
+        }}
+        title="남은일수 비율(대략치)"
+      />
+    </div>
+  </>
 )}
+
           </>
         ) : (
           "계정 정보 불러오는 중…"
@@ -2753,7 +3185,7 @@ return (
     >
       {/* 좌측: 원문 입력 + 업로드 */}
       <div style={{ flex: 1.25, padding: 16, background: "#fff", border: "1px solid #ddd", borderRadius: 8 }}>
-        <h3>✍ 원문 입력(최대100건 내 권장)</h3>
+        <h3>✍ 원문 입력(최대50건 내)</h3>
 
         <div
           onDrop={handleDrop}
@@ -2806,22 +3238,25 @@ return (
         </div>
 
         <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          style={{
-            width: "100%",
-            height: 340,
-            fontSize: 16,
-            padding: 12,
-            resize: "none",
-            border: "1px solid #333",
-            overflowY: "auto",
-            borderRadius: 6,
-            lineHeight: 1.6,
-          }}
-          placeholder="여기에 글을 입력하거나 파일/폴더를 드래그하세요…"
-        />
+  ref={textareaRef}
+  value={text}
+  onChange={(e) => setText(e.target.value)}
+  style={{
+    width: "100%",
+    maxWidth: "100%",        // ✅ 부모 안에서 100% 한정
+    boxSizing: "border-box", // ✅ 패딩/보더 포함해서 100%
+    display: "block",        // ✅ 인라인 요소 여백 이슈 방지
+    height: 340,
+    fontSize: 16,
+    padding: 12,
+    resize: "none",
+    border: "1px solid #333",
+    overflowY: "auto",
+    borderRadius: 6,
+    lineHeight: 1.6,
+  }}
+  placeholder="여기에 글을 입력하거나 상단 파일/폴더를 드래그하세요…"
+/>
 
         {me && !isAdmin && (
           <div
@@ -2841,47 +3276,64 @@ return (
         )}
 
         <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 10 }}>
-          {/* ✅ 맞춤법·문맥 — 관리자만 */}
-          <button
-            onClick={isAdmin ? handleCheck : undefined}
-            disabled={me ? !isAdmin : false}
-            title={isAdmin ? "맞춤법·문맥 검사 실행" : (me ? "관리자 전용 기능입니다" : "로그인 확인 중…")}
-            style={me && !isAdmin ? lockedBtnStyle : undefined}
-          >
-            {me && !isAdmin ? "🔒 맞춤법·문맥(관리자)" : "맞춤법·문맥"}
-          </button>
+  {/* ✅ 맞춤법·문맥 — 관리자만 (일반/게스트 잠금) */}
+  <button
+  onClick={isAdmin ? handleCheck : undefined}
+  disabled={!isAdmin}                                // ← 여기
+  title={isAdmin ? "맞춤법·문맥 검사 실행" : "관리자 전용 기능입니다"}
+  style={!isAdmin ? lockedBtnStyle : undefined}      // ← 여기
+>
+  {!isAdmin ? "🔒 개별 검사(관리자전용)" : "맞춤법·문맥"}
+</button>
 
-          {/* ✅ 심의 — 모두 허용 */}
-          <button onClick={handlePolicyCheck} title="심의(광고/의료 규정) 검사 실행">
-            심의
-          </button>
+  {/* ✅ 심의 — 게스트만 잠금 (관리자/일반 가능) */}
+  <button
+    onClick={!isGuest ? handlePolicyCheck : undefined}
+    disabled={isGuest}
+    title={isGuest ? "체험(게스트)에서는 사용이 제한됩니다." : "심의(광고/의료 규정) 검사 실행"}
+    style={isGuest ? lockedBtnStyle : undefined}
+  >
+    {isGuest ? "🔒 심의(게스트 제한)" : "심의"}
+  </button>
 
-          {/* ✅ 전체검사 — 관리자만 */}
-          <button
-            onClick={isAdmin ? handleBatchCheck : undefined}
-            disabled={me ? !isAdmin : false}
-            title={isAdmin ? "업로드된 모든 파일을 순차 검사" : (me ? "관리자 전용 기능입니다" : "로그인 확인 중…")}
-            style={me && !isAdmin ? lockedBtnStyle : undefined}
-          >
-            {me && !isAdmin ? "🔒 전체검사(관리자)" : "전체검사"}
-          </button>
+  {/* ✅ 전체검사 — 관리자만 (일반/게스트 잠금) */}
+  <button
+  onClick={isAdmin ? handleBatchCheck : undefined}
+  disabled={!isAdmin}                                // ← 여기
+  title={isAdmin ? "업로드된 모든 파일을 순차 검사" : "관리자 전용 기능입니다"}
+  style={!isAdmin ? lockedBtnStyle : undefined}      // ← 여기
+>
+  {!isAdmin ? "🔒 전체 검사(관리자전용)" : "전체검사"}
+</button>
 
-          {/* ✅ 저장류 — 모두 허용 (PDF 포함) */}
-          <button onClick={saveAsTxt}>
-            <span className="notranslate" translate="no" lang="en">
-              TXT
-            </span>
-          </button>
 
-          <button onClick={saveAsDocx}>
-            <span className="notranslate" translate="no" lang="en">
-              DOCX
-            </span>
-          </button>
+          {/* ✅ 저장류 — 로그인 사용자만 허용 (게스트 잠금) */}
+<button
+  onClick={!isGuest ? saveAsTxt : undefined}
+  disabled={isGuest}
+  title={isGuest ? "체험 모드에서는 저장이 제한됩니다." : "TXT 저장"}
+  style={isGuest ? lockedBtnStyle : undefined}
+>
+  <span className="notranslate" translate="no" lang="en">TXT</span>
+</button>
 
-          <button onClick={saveAsPDFSimple} title="PDF 리포트 저장">
-            PDF 보고서(통합)
-          </button>
+<button
+  onClick={!isGuest ? saveAsDocx : undefined}
+  disabled={isGuest}
+  title={isGuest ? "체험 모드에서는 저장이 제한됩니다." : "DOCX 저장"}
+  style={isGuest ? lockedBtnStyle : undefined}
+>
+  <span className="notranslate" translate="no" lang="en">DOCX</span>
+</button>
+
+<button
+  onClick={!isGuest ? saveAsPDFSimple : undefined}
+  disabled={isGuest}
+  title={isGuest ? "체험 모드에서는 PDF 보고서 저장이 제한됩니다." : "PDF 리포트 저장"}
+  style={isGuest ? lockedBtnStyle : undefined}
+>
+  PDF 보고서(통합)
+</button>
 
           <button onClick={handlePrevFile} disabled={fileIndex <= 0}>
             이전
@@ -3095,59 +3547,62 @@ return (
   <h3 style={{ marginTop: 0 }}>🔁 중복문장·유사 탐지</h3>
 
   {/* 한 문서 내 */}
-<div style={{ marginTop: 10 }}>
-  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-    <span style={{ fontWeight: "bold" }}>한 문서 내</span>
+  <div style={{ marginTop: 10 }}>
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <span style={{ fontWeight: "bold" }}>한 문서 내</span>
 
-    <label
-  title={
-`최소 글자 수 가이드
+      <label title={`최소 글자 수 가이드
 권장 범위: 4~12자 / 실무 평균값: 6~8자
 
 4~5자: 짧은 관용구·조사 중심 문장이 많이 끼어들어 오탐↑
 6~8자: 짧은 감탄/접속 문장 걸러지고 균형적
-10~12자: 짧은 문장·항목이 많이 제외되어 정밀(재현율↓)`
-  }
->
-      최소 글자 수 <span style={{ color: "#6b7280", marginLeft: 4 }}>(기준치)</span>
-      <input
-        type="number"
-        min={1}
-        value={intraMinLen}
-        onChange={(e) => setIntraMinLen(Number(e.target.value))}
-        style={{ width: 60, marginLeft: 4 }}
-      />
-    </label>
+10~12자: 짧은 문장·항목이 많이 제외되어 정밀(재현율↓)`}>
+        최소 글자 수 <span style={{ color: "#6b7280", marginLeft: 4 }}>(기준치)</span>
+        <input
+          type="number"
+          min={1}
+          value={intraMinLen}
+          onChange={(e) => setIntraMinLen(Number(e.target.value))}
+          disabled={isGuest}
+          style={{ width: 60, marginLeft: 4, ...(isGuest ? lockedBtnStyle : {}) }}
+          title={isGuest ? "체험(게스트)에서는 설정 변경이 잠깁니다." : ""}
+        />
+      </label>
 
-    <label
-  title={
-`유사도 기준 가이드
+      <label title={`유사도 기준 가이드
 권장 범위 : 0.65 ~ 0.80
 
 실무 평균값:
 - 단일 문서 내: 0.70 전후
-- 여러 문서 간: 0.75 전후(조금 더 엄격하게 잡는 편)
+- 여러 문서 간: 0.75 전후(조금 더 엄격)
 
 0.65~0.69: 느슨(재현↑/정밀↓)
 0.70~0.74: 보통
-0.75~0.80: 타이트(정밀↑/재현↓)`
-  }
->
-      유사도 기준 <span style={{ color: "#6b7280", marginLeft: 4 }}>(기준값)</span>
-      <input
-        type="number"
-        step="0.01"
-        value={intraSimTh}
-        onChange={(e) => setIntraSimTh(Number(e.target.value))}
-        style={{ width: 70, marginLeft: 4 }}
-      />
-    </label>
+0.75~0.80: 타이트(정밀↑/재현↓)`}>
+        유사도 기준 <span style={{ color: "#6b7280", marginLeft: 4 }}>(기준값)</span>
+        <input
+          type="number"
+          step="0.01"
+          value={intraSimTh}
+          onChange={(e) => setIntraSimTh(Number(e.target.value))}
+          disabled={isGuest}
+          style={{ width: 70, marginLeft: 4, ...(isGuest ? lockedBtnStyle : {}) }}
+          title={isGuest ? "체험(게스트)에서는 설정 변경이 잠깁니다." : ""}
+        />
+      </label>
 
-    <button onClick={handleIntraDedup} disabled={!text?.trim()}>
-      탐지
-    </button>
-  </div>
+      {/* ✅ 게스트만 잠금, 일반/관리자 실행 가능 */}
+      <button
+        onClick={!isGuest ? handleIntraDedup : undefined}
+        disabled={isGuest || !text?.trim()}
+        style={isGuest ? lockedBtnStyle : undefined}
+        title={isGuest ? "체험(게스트)에서는 한 문서 중복탐지가 잠깁니다." : "탐지"}
+      >
+        {isGuest ? "🔒 탐지(게스트 제한)" : "탐지"}
+      </button>
+    </div>
 
+    {/* 결과 영역 이하 그대로 */}
     <div
       style={{
         maxHeight: 150,

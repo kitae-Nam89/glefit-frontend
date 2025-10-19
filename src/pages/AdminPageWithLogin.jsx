@@ -73,6 +73,33 @@ export default function AdminPage() {
   const [rows, setRows] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+// [ADD] 운영 통계 상태
+const [usageSummary, setUsageSummary] = useState({ usage: [], errors: [], agreements: [] });
+const [usageLoading, setUsageLoading] = useState(false);
+
+// [ADD] 운영 통계 로더
+const loadUsageSummary = useCallback(async () => {
+  if (!token) return;
+  setUsageLoading(true);
+  try {
+    const { data } = await axios.get(`${API_BASE}/admin/usage_summary`);
+    setUsageSummary({
+      usage: data?.usage || [],
+      errors: data?.errors || [],
+      agreements: data?.agreements || [],
+    });
+  } catch (e) {
+    console.warn("usage_summary load failed:", e?.response?.data || e.message);
+  } finally {
+    setUsageLoading(false);
+  }
+}, [token]);
+
+// 토큰 장착 후 목록과 함께 로딩
+useEffect(() => {
+  if (token) loadUsageSummary();
+}, [token, loadUsageSummary]);
+
 
   // 초기 토큰 장착
   useEffect(() => {
@@ -331,6 +358,91 @@ export default function AdminPage() {
           <button type="submit" disabled={actionLoading} className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-60">{actionLoading?"처리중...":"발급 / 연장 실행"}</button>
         </div>
       </form>
+{/* [ADD] 운영 통계 카드 */}
+<div className="border rounded-2xl p-5 shadow-sm">
+  <div className="flex items-center justify-between mb-4 gap-3">
+    <h2 className="text-lg font-semibold">운영 통계</h2>
+    <div className="flex gap-2 items-center">
+      <button
+        className="px-3 py-2 border rounded-lg bg-white hover:bg-gray-100"
+        onClick={loadUsageSummary}
+        disabled={usageLoading}
+      >
+        {usageLoading ? "새로고침..." : "새로고침"}
+      </button>
+    </div>
+  </div>
+
+  {/* 요약 바 */}
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+    <div className="p-3 rounded-lg border bg-gray-50">
+      <div className="text-xs text-gray-500">동의(환불규정) 기록</div>
+      <div className="text-xl font-semibold">{usageSummary.agreements?.length || 0}</div>
+    </div>
+    <div className="p-3 rounded-lg border bg-gray-50">
+      <div className="text-xs text-gray-500">에러 사용자 수</div>
+      <div className="text-xl font-semibold">{usageSummary.errors?.length || 0}</div>
+    </div>
+    <div className="p-3 rounded-lg border bg-gray-50">
+      <div className="text-xs text-gray-500">집계 사용자 수</div>
+      <div className="text-xl font-semibold">{usageSummary.usage?.length || 0}</div>
+    </div>
+  </div>
+
+  {/* 사용량 표 */}
+  <div className="overflow-x-auto mb-6">
+    <table className="min-w-[960px] border">
+      <thead>
+        <tr className="bg-gray-50 text-sm">
+          <th className="p-2 border w-40">아이디</th>
+          <th className="p-2 border w-20">verify</th>
+          <th className="p-2 border w-20">policy</th>
+          <th className="p-2 border w-28">dedup_inter</th>
+          <th className="p-2 border w-28">dedup_intra</th>
+          <th className="p-2 border w-24">files합</th>
+        </tr>
+      </thead>
+      <tbody>
+        {usageSummary.usage?.length ? usageSummary.usage.map(u => (
+          <tr key={u.username} className="text-sm hover:bg-gray-50">
+            <td className="p-2 border font-mono">{u.username}</td>
+            <td className="p-2 border text-center">{u.verify || 0}</td>
+            <td className="p-2 border text-center">{u.policy || 0}</td>
+            <td className="p-2 border text-center">{u.dedup_inter || 0}</td>
+            <td className="p-2 border text-center">{u.dedup_intra || 0}</td>
+            <td className="p-2 border text-center">{u.files || 0}</td>
+          </tr>
+        )) : (
+          <tr><td className="p-4 text-center text-gray-500" colSpan={6}>데이터 없음</td></tr>
+        )}
+      </tbody>
+    </table>
+  </div>
+
+  {/* 에러 표 */}
+  <div className="overflow-x-auto">
+    <table className="min-w-[720px] border">
+      <thead>
+        <tr className="bg-gray-50 text-sm">
+          <th className="p-2 border w-40">아이디</th>
+          <th className="p-2 border w-24">에러수</th>
+          <th className="p-2 border w-56">마지막</th>
+        </tr>
+      </thead>
+      <tbody>
+        {usageSummary.errors?.length ? usageSummary.errors.map(e => (
+          <tr key={e.username} className="text-sm hover:bg-gray-50">
+            <td className="p-2 border font-mono">{e.username || "-"}</td>
+            <td className="p-2 border text-center">{e.errors || 0}</td>
+            <td className="p-2 border">{e.last || "-"}</td>
+          </tr>
+        )) : (
+          <tr><td className="p-4 text-center text-gray-500" colSpan={3}>에러 기록 없음</td></tr>
+        )}
+      </tbody>
+    </table>
+  </div>
+</div>
 
       {/* 검색/목록 */}
       <div className="border rounded-2xl p-5 shadow-sm">

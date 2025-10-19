@@ -99,16 +99,6 @@ ensure_users_table()
 def migrate_users_table():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    # 고객 접속 주소 보관(선택)
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN site_url TEXT")
-    except Exception:
-        pass
-    # 생성 시각(관리 편의)
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
-    except Exception:
-        pass
 
     # ★★★ 동시접속 제어용 컬럼 추가 ★★★
     try:
@@ -119,18 +109,60 @@ def migrate_users_table():
         cur.execute("ALTER TABLE users ADD COLUMN last_jti TEXT")
     except Exception:
         pass
-
-    # def migrate_users_table(): 내부 적절한 위치
     try:
         cur.execute("ALTER TABLE users ADD COLUMN allow_concurrent INTEGER DEFAULT 0")
     except Exception:
         pass
 
+    # 고객 접속 주소 보관(선택)
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN site_url TEXT")
+    except Exception:
+        pass
+
+    # 생성 시각(관리 편의)
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
 
+
+# [ADD] 운영/통계/캐시용 테이블
+def migrate_ops_tables():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS usage_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        action TEXT,           -- verify|policy|dedup_intra|dedup_inter|spell_local|login
+        files_count INTEGER,
+        created_at TEXT
+    )""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS error_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        path TEXT,
+        status INTEGER,
+        message TEXT,
+        created_at TEXT
+    )""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS agreements (
+        username TEXT PRIMARY KEY,
+        agreed_at TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+
+# 마이그레이션 실행
 migrate_users_table()
+migrate_ops_tables()
 
 # [ADD] user helpers & guards
 def _get_user(username: str):
@@ -156,6 +188,34 @@ def _remaining_days(paid_until: str) -> int:
         return max(0, delta.days)
     except Exception:
         return 0
+
+# [ADD] 사용량/에러 로깅 헬퍼
+def log_usage(username, action, files_count=0):
+    try:
+        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        cur.execute("INSERT INTO usage_logs (username, action, files_count, created_at) VALUES (?,?,?,?)",
+                    (username or "", action or "", int(files_count or 0), datetime.utcnow().isoformat()))
+        conn.commit(); conn.close()
+    except Exception:
+        pass
+
+def log_error(username, path, status, message):
+    try:
+        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        cur.execute("INSERT INTO error_logs (username, path, status, message, created_at) VALUES (?,?,?,?,?)",
+                    (username or "", path or "", int(status or 0), str(message)[:500], datetime.utcnow().isoformat()))
+        conn.commit(); conn.close()
+    except Exception:
+        pass
+
+def _username_from_req():
+    try:
+        auth = request.headers.get("Authorization","")
+        tok = auth.split(" ",1)[1]
+        data = jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALG])
+        return data.get("sub") or ""
+    except Exception:
+        return ""
 
 def _is_paid_and_active(u: dict) -> bool:
     if not u or not u.get("is_active"):
@@ -812,6 +872,16 @@ def auth_ping():
         return "", 200
     return jsonify({"ok": True})
 
+@app.route("/auth/agree_refund", methods=["POST"])
+@require_user
+def auth_agree_refund():
+    username = _username_from_req()
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("INSERT OR REPLACE INTO agreements (username, agreed_at) VALUES (?,?)",
+                (username, datetime.utcnow().isoformat()))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
 @app.route("/auth/me", methods=["GET", "OPTIONS"])
 @require_user
 def auth_me():
@@ -1334,11 +1404,13 @@ def dedup_inter():
         min_len = int(data.get("min_len", 6))
         sim_th  = float(data.get("sim_threshold", 0.85))
         exact, sims = _dedup_inter(files, min_len=min_len, sim_threshold=sim_th)
+        log_usage(_username_from_req(), "dedup_inter", len(files))
         return jsonify({"exact_groups": exact, "similar_pairs": sims})
     except Exception as e:
         import traceback
         print("❌ /dedup_inter 오류:", e)
         traceback.print_exc()
+        log_error(_username_from_req(), "/dedup_inter", 500, str(e))
         return jsonify({"error": str(e)}), 500
 
 @app.route("/policy_verify", methods=["POST", "OPTIONS"])
@@ -1360,13 +1432,28 @@ def policy_verify():
         # 출처 태그
         for it in items:
             it["source"] = "policy"
-
+        log_usage(_username_from_req(), "policy", 1)
         return jsonify({"results": items})
     except Exception as e:
         import traceback
         print("❌ /policy_verify 오류:", e)
         traceback.print_exc()
+        log_error(_username_from_req(), "/policy_verify", 500, str(e))
         return jsonify({"error": str(e), "results": []}), 500
+
+@app.after_request
+def _after(resp):
+    try:
+        if resp.status_code >= 400:
+            log_error(_username_from_req(), request.path, resp.status_code, getattr(resp, "data", b"")[:120])
+    except Exception:
+        pass
+    return resp
+
+@app.errorhandler(Exception)
+def _on_error(e):
+    log_error(_username_from_req(), request.path, 500, str(e))
+    raise e
 
 @app.route("/health", methods=["GET"])
 def health():
