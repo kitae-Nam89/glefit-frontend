@@ -801,19 +801,38 @@ def _dedup_inter(files, min_len=6, sim_threshold=0.85):
     return exact, sims
 
 # ==================== Flask ====================
-from flask import Flask
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import re
 
 app = Flask(__name__)
 
+# HEAD는 라우팅 매칭을 통과해야 하므로 캐치올 라우트가 필요
+@app.route("/", defaults={"path": ""}, methods=["HEAD"])
+@app.route("/<path:path>", methods=["HEAD"])
+def __head_ok(path):
+    return ("", 200, {"Content-Type": "text/plain; charset=utf-8"})
+
+@app.route("/healthz", methods=["GET", "HEAD"])
+def __healthz():
+    if request.method == "HEAD":
+        return ("", 200, {"Content-Type": "text/plain; charset=utf-8"})
+    return jsonify({"ok": True})
+
+
+# 1) HEAD 헬스체크/프록시 안전 가드 (모든 경로 공통)
+@app.before_request
+def _head_guard():
+    if request.method == "HEAD":
+        return ("", 200, {"Content-Type": "text/plain; charset=utf-8"})
+
+# 2) CORS (프리뷰/터널/로컬 허용)
 ALLOWED_ORIGINS = [
-    "https://glefit-frontend.vercel.app",     # 실제 프로덕션 도메인으로 교체 가능
-    re.compile(r"https://.*\.vercel\.app"),   # 모든 Vercel 프리뷰
-    re.compile(r"https://.*\.trycloudflare\.com"),  # ✅ 모든 Cloudflare Quick Tunnel 허용
+    "https://glefit-frontend.vercel.app",
+    re.compile(r"https://.*\.vercel\.app"),
+    re.compile(r"https://.*\.trycloudflare\.com"),
     "http://localhost:3000",
 ]
-
 CORS(
     app,
     resources={r"/*": {"origins": ALLOWED_ORIGINS}},
@@ -822,6 +841,23 @@ CORS(
     expose_headers=["*"],
 )
 
+# 3) 루트 & 헬스 — 단일 정의만 유지
+@app.route("/", methods=["GET", "HEAD"])
+def root():
+    # HEAD는 위 before_request에서 이미 200 처리됨 → 여기서는 GET만 도달
+    return jsonify({"ok": True, "service": "glefit-server"}), 200
+
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    if request.method == "HEAD":
+        return ("", 200, {"Content-Type": "text/plain; charset=utf-8"})
+    return jsonify({"ok": True, "routes": [
+        "/","/health",
+        "/auth/login","/auth/ping","/auth/me",
+        "/admin/issue_user","/admin/set_active","/admin/reset_password",
+        "/admin/list_users","/admin/delete_user",
+        "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local"
+    ]})
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
@@ -1450,21 +1486,20 @@ def _after(resp):
         pass
     return resp
 
+from werkzeug.exceptions import HTTPException
+
+@app.errorhandler(HTTPException)
+def _http_error(e):
+    # 404/401/405 같은 정상 HTTP 오류는 원래 상태코드로 그대로 반환
+    return e
+
 @app.errorhandler(Exception)
 def _on_error(e):
-    log_error(_username_from_req(), request.path, 500, str(e))
-    raise e
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({
-        "ok": True,
-        "routes": [
-            "/auth/login","/auth/ping","/auth/me",
-            "/admin/issue_user","/admin/set_active","/admin/reset_password","/admin/list_users","/admin/delete_user",
-            "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local","/health"
-        ]
-    })
+    # 404/401/405 같은 HTTP 예외는 원래 상태코드 그대로 반환해야 함
+    if isinstance(e, HTTPException):
+        return e  # ★ 반드시 return e !!!
+    # 그 외 진짜 에러만 500 처리
+    return jsonify({"error": "internal"}), 500
 
 # === 4) 관리자: 기간 조정 API ===
 # 위치: (① /admin/approve 아래) 또는 (② if __name__ == "__main__": 바로 위)

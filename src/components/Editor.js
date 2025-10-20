@@ -8,85 +8,156 @@ import { Document, Packer, Paragraph } from "docx";
  * 좌(원문/업로드) / 중(하이라이트) / 우(추천항목 + 중복탐지)
  */
 // === API / AUTH 기본 ===
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
 
-const AUTH_KEY_LOCAL = "glefit_token"; // 자동로그인(브라우저 재시작 후에도 유지)
-const AUTH_KEY_SESS = "glefit_token_session"; // 일반로그인(창 닫으면 사라짐)
-const REMEMBER_ID_KEY = "glefit_saved_id"; // 아이디 저장
-const AUTO_LOGIN_KEY = "glefit_auto_login"; // 자동로그인 여부( "1"/"0" )
+// 0) 쿼리파라미터 오버라이드: ?api_base=http://127.0.0.1:5000
+let queryApiBase = "";
+try {
+  if (typeof window !== "undefined") {
+    const u = new URL(window.location.href);
+    queryApiBase = (u.searchParams.get("api_base") || "").trim();
+  }
+} catch (_) {}
 
+// 1) 환경변수 안전 추출 (process가 없을 수도 있으니 가드)
+const ENV = (typeof process !== "undefined" && process.env) ? process.env : {};
+const envApiBase =
+  (ENV.NEXT_PUBLIC_API_BASE && String(ENV.NEXT_PUBLIC_API_BASE).trim()) ||
+  (ENV.REACT_APP_API_BASE && String(ENV.REACT_APP_API_BASE).trim()) ||
+  "";
+
+// 2) 최종 API_BASE 결정
+const API_BASE =
+  queryApiBase ||
+  (typeof window !== "undefined" && window.__API_BASE__ && String(window.__API_BASE__).trim()) ||
+  envApiBase ||
+  ((typeof window !== "undefined") &&
+   (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+     ? "http://127.0.0.1:5000"
+     : "https://glefit.onrender.com");
+
+// 3) axios baseURL 적용 (⚠️ axios import는 파일 상단 import 구역에 있어야 함)
+axios.defaults.baseURL = API_BASE;
+
+// 4) 토큰/헤더 유틸 상수
+const AUTH_KEY_LOCAL   = "glefit_token";          // 자동로그인: localStorage
+const AUTH_KEY_SESS    = "glefit_token_session";  // 일반로그인: sessionStorage
+const REMEMBER_ID_KEY  = "glefit_saved_id";       // 로그인 아이디 저장
+const AUTO_LOGIN_KEY   = "glefit_auto_login";     // "1"=자동, "0"=일반
+
+// 5) 공통: Authorization 헤더 적용/해제
+function applyAuthHeader(token) {
+  if (token) {
+    axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  } else {
+    delete axios.defaults.headers.common["Authorization"];
+  }
+}
+
+// 현재 저장된 토큰 읽기
 function getToken() {
   return (
-    (typeof sessionStorage !== "undefined" &&
-      sessionStorage.getItem(AUTH_KEY_SESS)) ||
-    (typeof localStorage !== "undefined" &&
-      localStorage.getItem(AUTH_KEY_LOCAL)) ||
+    (typeof sessionStorage !== "undefined" && sessionStorage.getItem(AUTH_KEY_SESS)) ||
+    (typeof localStorage  !== "undefined" && localStorage.getItem(AUTH_KEY_LOCAL)) ||
     ""
   );
 }
 
-function setToken(token, { auto = false } = {}) {
-  clearToken();
-  if (auto) {
-    localStorage.setItem(AUTH_KEY_LOCAL, token);
-    localStorage.setItem(AUTO_LOGIN_KEY, "1");
-  } else {
-    sessionStorage.setItem(AUTH_KEY_SESS, token);
-    localStorage.setItem(AUTO_LOGIN_KEY, "0");
+// 처음 로드 시 1회 헤더 반영
+applyAuthHeader(getToken());
+
+// 6) 로그인/토큰/아이디 저장 헬퍼 ===== (추가됨) =====
+function setToken(token, opts = { auto: false }) {
+  try {
+    const auto = !!opts.auto;
+    if (auto) {
+      // 자동 로그인: localStorage에 저장
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(AUTH_KEY_LOCAL, token || "");
+        localStorage.setItem(AUTO_LOGIN_KEY, "1");
+      }
+      if (typeof sessionStorage !== "undefined") {
+        sessionStorage.removeItem(AUTH_KEY_SESS);
+      }
+    } else {
+      // 일반 로그인: sessionStorage에 저장
+      if (typeof sessionStorage !== "undefined") {
+        sessionStorage.setItem(AUTH_KEY_SESS, token || "");
+      }
+      if (typeof localStorage !== "undefined") {
+        localStorage.removeItem(AUTH_KEY_LOCAL);
+        localStorage.setItem(AUTO_LOGIN_KEY, "0");
+      }
+    }
+  } finally {
+    applyAuthHeader(token);
   }
 }
 
 function clearToken() {
-  try { localStorage.removeItem(AUTH_KEY_LOCAL); } catch (e) {}
-  try { sessionStorage.removeItem(AUTH_KEY_SESS); } catch (e) {}
-  try { localStorage.removeItem(AUTO_LOGIN_KEY); } catch (e) {}
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.removeItem(AUTH_KEY_LOCAL);
+      localStorage.removeItem(AUTO_LOGIN_KEY);
+    }
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.removeItem(AUTH_KEY_SESS);
+    }
+  } finally {
+    applyAuthHeader("");
+  }
+}
+
+function setSavedId(id = "", remember = false) {
+  if (typeof localStorage === "undefined") return;
+  if (remember && id) {
+    localStorage.setItem(REMEMBER_ID_KEY, String(id));
+  } else {
+    localStorage.removeItem(REMEMBER_ID_KEY);
+  }
 }
 
 function getSavedId() {
   try {
-    return localStorage.getItem(REMEMBER_ID_KEY) || "";
-  } catch (e) {
+    return (typeof localStorage !== "undefined" && localStorage.getItem(REMEMBER_ID_KEY)) || "";
+  } catch {
     return "";
   }
 }
 
-function setSavedId(id, on) {
-  try {
-    on && id
-      ? localStorage.setItem(REMEMBER_ID_KEY, id)
-      : localStorage.removeItem(REMEMBER_ID_KEY);
-  } catch (e) {}
-}
-
 function getAutoLogin() {
   try {
+    if (typeof localStorage === "undefined") return false;
     return localStorage.getItem(AUTO_LOGIN_KEY) === "1";
-  } catch (e) {
+  } catch {
     return false;
   }
 }
+// ===== 헬퍼 끝 =====
 
-// [ADD] axios 초기 토큰 장착
+// 7) 부팅 시 토큰 장착 보강
 const bootToken = getToken();
-if (bootToken)
+if (bootToken) {
   axios.defaults.headers.common["Authorization"] = `Bearer ${bootToken}`;
+} else {
+  delete axios.defaults.headers.common["Authorization"];
+}
 
-// [ADD] 응답 인터셉터(만료/미결제 처리)
+// 8) 응답 인터셉터(만료/미결제 처리)
 axios.interceptors.response.use(
   (res) => res,
   (err) => {
     const s = err?.response?.status;
     if (s === 401) {
       clearToken();
-      delete axios.defaults.headers.common["Authorization"];
       alert("로그인이 필요합니다.");
-      window.location.reload();
+      if (typeof window !== "undefined") window.location.reload();
     } else if (s === 402) {
       alert("결제 대기 또는 이용기간 만료입니다. 관리자에게 문의하세요.");
     }
     return Promise.reject(err);
   }
 );
+
 // ========= 유틸 =========
 const escapeRegExp = (s = "") => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
