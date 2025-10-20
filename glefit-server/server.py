@@ -105,6 +105,7 @@ def _boot_seed_admin():
     try:
         import sqlite3, os
         from datetime import datetime, timedelta
+        # passlib 해시를 전역에서: from passlib.hash import pbkdf2_sha256 as bcrypt
 
         admin_user = (os.getenv("ADMIN_USER") or "").strip()
         admin_pass = (os.getenv("ADMIN_PASS") or "").strip()
@@ -112,7 +113,10 @@ def _boot_seed_admin():
         if not admin_user or not admin_pass or admin_days <= 0:
             return
 
-        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+
+        # 최소 스키마 보장 (테이블/인덱스만)
         cur.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,49 +132,22 @@ def _boot_seed_admin():
 
         paid_until = (datetime.utcnow() + timedelta(days=admin_days)).isoformat()
         cur.execute("""
-        INSERT INTO users (username,password_hash,is_active,paid_until,role,notes)
-        VALUES (?,?,?,?,?,'seed admin')
+        INSERT INTO users (username, password_hash, is_active, paid_until, role, notes)
+        VALUES (?, ?, 1, ?, 'admin', 'seed admin')
         ON CONFLICT(username) DO UPDATE SET
-          password_hash=excluded.password_hash,
-          is_active=1,
-          paid_until=excluded.paid_until,
-          role='admin',
-          notes='seed admin'
-        """, (admin_user, bcrypt.hash(admin_pass), 1, paid_until, "admin"))
-        conn.commit(); conn.close()
+          password_hash = excluded.password_hash,
+          is_active     = 1,
+          paid_until    = excluded.paid_until,
+          role          = 'admin',
+          notes         = 'seed admin'
+        """, (admin_user, bcrypt.hash(admin_pass), paid_until))
+
+        conn.commit()
+        conn.close()
         print(f"[boot-seed] admin ready: {admin_user} (until {paid_until})")
+
     except Exception as e:
         print("[boot-seed] skip/error:", e)
-
-    # ★★★ 동시접속 제어용 컬럼 추가 ★★★
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0")
-    except Exception:
-        pass
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN last_jti TEXT")
-    except Exception:
-        pass
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN allow_concurrent INTEGER DEFAULT 0")
-    except Exception:
-        pass
-
-    # 고객 접속 주소 보관(선택)
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN site_url TEXT")
-    except Exception:
-        pass
-
-    # 생성 시각(관리 편의)
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
-    except Exception:
-        pass
-
-    conn.commit()
-    conn.close()
-
 
 # [ADD] 운영/통계/캐시용 테이블
 def migrate_ops_tables():
