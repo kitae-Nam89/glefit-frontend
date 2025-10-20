@@ -100,6 +100,21 @@ def migrate_users_table():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
+    # 로그인/세션 관리 및 편의 필드 추가 (이미 있으면 넘어감)
+    try: cur.execute("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0")
+    except Exception: pass
+    try: cur.execute("ALTER TABLE users ADD COLUMN last_jti TEXT")
+    except Exception: pass
+    try: cur.execute("ALTER TABLE users ADD COLUMN allow_concurrent INTEGER DEFAULT 0")
+    except Exception: pass
+    try: cur.execute("ALTER TABLE users ADD COLUMN site_url TEXT")
+    except Exception: pass
+    try: cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
+    except Exception: pass
+
+    conn.commit()
+    conn.close()
+
 # === (BOOT SEED) 서버 기동 시 관리자 계정 보장 ===
 def _boot_seed_admin():
     try:
