@@ -2816,57 +2816,154 @@ if (!token && !guestMode) {  // ← 게스트 모드일 때는 에디터로 진�
           boxShadow: "0 6px 20px rgba(0,0,0,0.06)",
         }}
       >
-        <h2 style={{ marginTop: 0 }}>글핏</h2>
-        <p style={{ marginTop: 6, fontSize: 13, color: "#374151" }}>
-          문의 카카오 <b>txt365</b> · 계정당 월 무제한 <b>22,000원</b>
-        </p>
+<h2 style={{ marginTop: 0 }}>다 문서 중복체크 글핏</h2>
 
-        <div style={{ marginBottom: 12 }}>
-          <input
-            value={loginU}
-            onChange={(e) => setLoginU(e.target.value)}
-            placeholder="아이디"
-            style={{ width: "100%", padding: "10px", border: "1px solid #d6dbe6", borderRadius: 8 }}
-          />
-        </div>
+{/* 로그인 화면 상단 공지 */}
+<aside
+  aria-label="공지"
+  style={{
+    marginTop: 8,
+    padding: "12px 14px",
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    background: "#f8fafc",
+    color: "#374151",
+    fontSize: 13,
+    lineHeight: 1.65,
+  }}
+>
+  <div style={{ fontWeight: 800, marginBottom: 8 }}>공지</div>
 
-        <div style={{ marginBottom: 12 }}>
-          <input
-            type="password"
-            value={loginP}
-            onChange={(e) => setLoginP(e.target.value)}
-            placeholder="비밀번호"
-            style={{ width: "100%", padding: "10px", border: "1px solid #d6dbe6", borderRadius: 8 }}
-          />
-        </div>
+  <div>
+    현재 <b>순차적으로 ID 발급 중</b>이며 <b>응답이 지연</b>될 수 있습니다.<br/>
+    최대한 빠르게 처리하겠습니다. 감사합니다.
+  </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}>
-          <label>
-            <input
-              type="checkbox"
-              checked={rememberId}
-              onChange={(e) => setRememberId(e.target.checked)}
-            />{" "}
-            아이디 저장
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={autoLogin}
-              onChange={(e) => setAutoLogin(e.target.checked)}
-            />{" "}
-            자동 로그인
-          </label>
-        </div>
+  <div style={{ marginTop: 8 }}>
+    입금 후 <b>“문의”</b>남겨주시면 <b>더 빠르게 ID 발급</b> 가능합니다.
+  </div>
 
-        {loginErr && <div style={{ color: "#b20000", marginBottom: 8 }}>{loginErr}</div>}
+  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+    <b>농협 352-1639-3012-83 남기태</b>
+    <button
+      type="button"
+      onClick={() => navigator.clipboard?.writeText("농협 352-1639-3012-83")}
+      style={{
+        padding: "4px 8px",
+        fontSize: 12,
+        border: "1px solid #d1d5db",
+        borderRadius: 6,
+        background: "#fff",
+        cursor: "pointer"
+      }}
+      title="계좌번호 복사"
+    >
+      복사
+    </button>
+  </div>
 
-        <button
-          type="submit"
-          style={{ width: "100%", padding: "10px", background: "#111827", color: "#fff", border: "none", borderRadius: 8 }}
-        >
-          로그인
-        </button>
+  <div style={{ marginTop: 4 }}>계정당 <b>22,000원/월</b></div>
+
+  <div style={{ marginTop: 8 }}>
+    <b>세금계산서</b> 발행 - <b>사업자등록증</b>과 <b>메일주소</b>전달 바랍니다.
+  </div>
+
+  <div style={{ marginTop: 8 }}>
+    문의 카카오 <b>txt365</b> · 시간 <b>10시~16시 (주말·공휴일 제외)</b>
+  </div>
+</aside>
+
+{/* === 로그인 입력영역 (교체) === */}
+<div style={{ marginBottom: 12 }}>
+  <input
+    value={loginU}
+    onChange={(e) => setLoginU(e.target.value)}
+    placeholder="아이디"
+    style={{
+      width: "100%",
+      height: 44,                 // ✅ 높이 통일
+      boxSizing: "border-box",
+      padding: "10px 12px",       // ✅ 패딩 통일
+      fontSize: 14,               // ✅ 폰트 통일
+      border: "1px solid #d1d5db",
+      borderRadius: 8,
+      background: "#f9fafb",
+      color: "#111827",
+      outline: "none",
+    }}
+  />
+</div>
+
+<div style={{ marginBottom: 12 }}>
+  <input
+    type="password"
+    value={loginP}
+    onChange={(e) => setLoginP(e.target.value)}
+    placeholder="비밀번호"
+    style={{
+      width: "100%",
+      height: 44,                 // ✅ 높이 통일
+      boxSizing: "border-box",
+      padding: "10px 12px",       // ✅ 패딩 통일
+      fontSize: 14,               // ✅ 폰트 통일
+      border: "1px solid #d1d5db",
+      borderRadius: 8,
+      background: "#f9fafb",
+      color: "#111827",
+      outline: "none",
+    }}
+  />
+</div>
+
+<div
+  style={{
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",         // ✅ 수직 정렬
+    gap: 16,
+    fontSize: 13,
+    marginBottom: 8,
+  }}
+>
+  <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+    <input
+      type="checkbox"
+      checked={rememberId}
+      onChange={(e) => setRememberId(e.target.checked)}
+      style={{ width: 16, height: 16 }}
+    />
+    아이디 저장
+  </label>
+  <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+    <input
+      type="checkbox"
+      checked={autoLogin}
+      onChange={(e) => setAutoLogin(e.target.checked)}
+      style={{ width: 16, height: 16 }}
+    />
+    자동 로그인
+  </label>
+</div>
+
+{loginErr && (
+  <div style={{ color: "#b20000", marginBottom: 8 }}>{loginErr}</div>
+)}
+
+<button
+  type="submit"
+  style={{
+    width: "100%",
+    height: 44,                   // ✅ 버튼도 높이 통일
+    fontSize: 14,
+    background: "#111827",
+    color: "#fff",
+    border: "none",
+    borderRadius: 8,
+    cursor: "pointer",
+  }}
+>
+  로그인
+</button>
 
         {/* ───── 추가: 구분선 + 데모 체험 버튼/안내 ───── */}
         <div style={{ margin: "10px 0", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>또는</div>
