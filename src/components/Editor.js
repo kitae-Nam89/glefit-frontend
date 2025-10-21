@@ -2816,7 +2816,7 @@ if (!token && !guestMode) {  // ← 게스트 모드일 때는 에디터로 진�
           boxShadow: "0 6px 20px rgba(0,0,0,0.06)",
         }}
       >
-<h2 style={{ marginTop: 0 }}>다 문서 중복체크 글핏</h2>
+<h2 style={{ marginTop: 0 }}>하루 1,100원 다 문서 중복체크 글핏</h2>
 
 {/* 로그인 화면 상단 공지 */}
 <aside
@@ -2844,7 +2844,7 @@ if (!token && !guestMode) {  // ← 게스트 모드일 때는 에디터로 진�
   </div>
 
   <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-    <b>농협 352-1639-3012-83 남기태</b>
+    <b>농협 352-1639-3012-83 늘솜제작소(남기태)</b>
     <button
       type="button"
       onClick={() => navigator.clipboard?.writeText("농협 352-1639-3012-83")}
@@ -2862,7 +2862,7 @@ if (!token && !guestMode) {  // ← 게스트 모드일 때는 에디터로 진�
     </button>
   </div>
 
-  <div style={{ marginTop: 4 }}>계정당 <b>22,000원/월</b></div>
+  <div style={{ marginTop: 4 }}>계정당 <b>33,000원/월</b></div>
 
   <div style={{ marginTop: 8 }}>
     <b>세금계산서</b> 발행 - <b>사업자등록증</b>과 <b>메일주소</b>전달 바랍니다.
