@@ -1,585 +1,573 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import axios from "axios";
 
-/**
- * AdminPageWithLogin.jsx
- * - 관리자 전용 단일 페이지
- * - 화면 내에 로그인 폼 내장 (토큰 없으면 로그인 카드 노출)
- * - 로그인 성공 시 localStorage('glefit_token')에 토큰 저장 후 관리자 기능 활성화
- * - 기능: 발급/연장(/admin/issue_user), 중단/해지(/admin/set_active), 비번 초기화(/admin/reset_password),
- *         목록/검색(/admin/list_users), 상단 로그아웃, 남은일수/메모/주소 표시, 도메인 제한(site_url) 등록
- *
- * 전제: server.py의 엔드포인트 배포 필요 (REACT_APP_API_BASE .env로 설정 가능)
- */
+const API_BASE = process.env.REACT_APP_API_BASE || "";
 
-const API_BASE = process.env.REACT_APP_API_BASE || ""; // 예: "http://localhost:5000"
-
-// axios 기본 헤더 설정
+/* ===== util ===== */
 function setAuthHeader(token) {
-  if (token) {
-    axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  } else {
-    delete axios.defaults.headers.common["Authorization"];
-  }
+  if (token) axios.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  else delete axios.defaults.headers.common["Authorization"];
 }
-
 function fmtDate(iso) {
   if (!iso) return "-";
   try {
     const d = new Date(iso);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-      d.getDate()
-    ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(
-      d.getMinutes()
-    ).padStart(2, "0")}`;
-  } catch {
-    return iso;
-  }
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+  } catch { return iso; }
 }
 
-export default function AdminPage() {
-  // auth
+/* ===== inline css (경량) ===== */
+const CSS = `
+.shell{max-width:1280px;margin:0 auto;padding:20px}
+.topbar{display:grid;grid-template-columns:auto 1fr auto;gap:10px;background:#0b1324;color:#fff;border-radius:12px;padding:10px}
+.badge{padding:.25rem .5rem;border-radius:9999px;background:#2b334a;color:#fff;font-size:12px}
+.btn{border:1px solid #d1d5db;border-radius:10px;background:#fff;padding:.45rem .7rem;cursor:pointer}
+.btn:disabled{opacity:.6;cursor:not-allowed}
+.input,.select,.textarea{border:1px solid #d1d5db;border-radius:10px;padding:.5rem .7rem;width:100%}
+.card{border:1px solid #e5e7eb;border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(16,24,40,.04);background:#fff}
+.small{font-size:12px;color:#64748b}
+.h2{font-size:18px;font-weight:600;margin:0 0 10px}
+.table{border-collapse:collapse;width:100%}
+.table th,.table td{border:1px solid #e5e7eb;padding:6px 8px;font-size:13px;line-height:1.2}
+.btn-sm{border:1px solid #e5e7eb;border-radius:8px;background:#fff;padding:.25rem .45rem;font-size:12px;cursor:pointer}
+.btn-sm:disabled{opacity:.6;cursor:not-allowed}
+.table thead{background:#f9fafb}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+.grid{display:grid;grid-template-columns:260px 1fr 360px;gap:18px;margin-top:18px}
+@media (max-width:1100px){.grid{grid-template-columns:1fr;}}
+.sticky{position:sticky;top:14px}
+.kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+@media (max-width:800px){.kpis{grid-template-columns:1fr}}
+.scrollx{overflow:auto;cursor:grab}
+.scrollx:active{cursor:grabbing}
+.minw-users{min-width:960px}     /* 사용자 목록 */
+.minw-usage{min-width:840px}     /* 운영 통계 표 */
+.minw-traffic{min-width:720px}   /* 트래픽 표 */
+.right-col{display:grid;gap:18px;height:fit-content}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:flex-end}
+`;
+const InlineStyle = () => <style>{CSS}</style>;
+
+/* ===== drag-to-scroll 훅 ===== */
+function useDragScroll() {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let isDown = false, startX = 0, scrollLeft = 0;
+    const onDown = (e) => { isDown = true; startX = (e.pageX || e.touches?.[0]?.pageX) - el.offsetLeft; scrollLeft = el.scrollLeft; };
+    const onLeave = () => { isDown = false; };
+    const onUp = () => { isDown = false; };
+    const onMove = (e) => {
+      if (!isDown) return;
+      e.preventDefault();
+      const x = (e.pageX || e.touches?.[0]?.pageX) - el.offsetLeft;
+      el.scrollLeft = scrollLeft - (x - startX);
+    };
+    el.addEventListener("mousedown", onDown); el.addEventListener("mouseleave", onLeave);
+    el.addEventListener("mouseup", onUp); el.addEventListener("mousemove", onMove);
+    el.addEventListener("touchstart", onDown, {passive:true}); el.addEventListener("touchend", onUp);
+    el.addEventListener("touchmove", onMove, {passive:false});
+    return () => {
+      el.removeEventListener("mousedown", onDown); el.removeEventListener("mouseleave", onLeave);
+      el.removeEventListener("mouseup", onUp); el.removeEventListener("mousemove", onMove);
+      el.removeEventListener("touchstart", onDown); el.removeEventListener("touchend", onUp);
+      el.removeEventListener("touchmove", onMove);
+    };
+  }, []);
+  return ref;
+}
+
+export default function AdminPage(){
+  /* ---------- auth ---------- */
   const [token, setToken] = useState("");
   const [me, setMe] = useState(null);
-  const [authErr, setAuthErr] = useState("");
   const [pingOK, setPingOK] = useState(false);
+  const [authErr, setAuthErr] = useState("");
 
-  // ⬇️ 여기 한 줄 추가 (처음 기본 공지 문구는 바꿔도 됨)
-  const [notice, setNotice] = useState(
-  localStorage.getItem("glefit_notice") || "📢 공지를 입력하세요 (우측 ‘공지 수정’)"
-  );
+  /* 상단 공지 */
+  const [notice, setNotice] = useState(localStorage.getItem("glefit_notice") || "📢 공지를 입력하세요 (우측 ‘공지 수정’)");
 
-  // ⬇️ 저장/복원 (붙여넣기)
-  useEffect(() => {
-  const saved = localStorage.getItem("glefit_notice");
-  if (saved && saved.trim() !== "") setNotice(saved);
-  }, []);
-  useEffect(() => {
-  localStorage.setItem("glefit_notice", notice || "");
-  }, [notice]);
+  useEffect(()=>{ const v = localStorage.getItem("glefit_notice"); if(v?.trim()) setNotice(v); },[]);
+  useEffect(()=>{ localStorage.setItem("glefit_notice", notice || ""); },[notice]);
 
-
-  // login form
+  /* 로그인 폼 */
   const [loginId, setLoginId] = useState(localStorage.getItem("glefit_saved_admin_id") || "");
   const [loginPw, setLoginPw] = useState("");
   const [rememberId, setRememberId] = useState(!!localStorage.getItem("glefit_saved_admin_id"));
   const [loggingIn, setLoggingIn] = useState(false);
 
-  // 발급/연장 폼
-  const [fUser, setFUser] = useState({ username: "", password: "", days: 32, site_url: "", note: "" });
+  /* 발급/연장 폼 */
+  const [fUser, setFUser] = useState({ username:"", password:"", days:32, site_url:"", note:"" });
 
-  // 목록/검색
+  /* 목록/검색 */
   const [q, setQ] = useState("");
   const [rows, setRows] = useState([]);
   const [listLoading, setListLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-// [ADD] 운영 통계 상태
-const [usageSummary, setUsageSummary] = useState({ usage: [], errors: [], agreements: [] });
-const [usageLoading, setUsageLoading] = useState(false);
 
-// [ADD] 운영 통계 로더
-const loadUsageSummary = useCallback(async () => {
-  if (!token) return;
-  setUsageLoading(true);
-  try {
-    const { data } = await axios.get(`${API_BASE}/admin/usage_summary`);
-    setUsageSummary({
-      usage: data?.usage || [],
-      errors: data?.errors || [],
-      agreements: data?.agreements || [],
-    });
-  } catch (e) {
-    console.warn("usage_summary load failed:", e?.response?.data || e.message);
-  } finally {
-    setUsageLoading(false);
-  }
-}, [token]);
+  /* 운영 통계 */
+  const [usageSummary, setUsageSummary] = useState({ usage:[], errors:[], agreements:[] });
+  const [usageLoading, setUsageLoading] = useState(false);
 
-// 토큰 장착 후 목록과 함께 로딩
-useEffect(() => {
-  if (token) loadUsageSummary();
-}, [token, loadUsageSummary]);
+  /* 트래픽 */
+  const [gran, setGran] = useState("day");
+  const [range, setRange] = useState({ start:"", end:"" });
+  const [traffic, setTraffic] = useState({ series:[], totals:{ visits:0, logins:0, unique_users:0 }});
+  const [trafficLoading, setTrafficLoading] = useState(false);
 
-
-  // 초기 토큰 장착
-  useEffect(() => {
-    const t = localStorage.getItem("glefit_token") || "";
-    setToken(t);
-    setAuthHeader(t);
-    if (t) {
-      verifyToken();
-    }
-  }, []);
-
-  async function verifyToken() {
-    try {
+  /* 초기 토큰 */
+  useEffect(()=>{ const t = localStorage.getItem("glefit_token") || ""; setToken(t); setAuthHeader(t); if (t) verifyToken(); },[]);
+  async function verifyToken(){
+    try{
       await axios.get(`${API_BASE}/auth/ping`);
-      setPingOK(true);
       const { data } = await axios.get(`${API_BASE}/auth/me`);
-      setMe(data);
-    } catch (e) {
-      setPingOK(false);
-      setMe(null);
-    }
+      setMe(data); setPingOK(true);
+    }catch{ setPingOK(false); setMe(null); }
   }
+  const isAdmin = useMemo(()=> {
+    const r = String(me?.role||"").toLowerCase().trim();
+    return r==="admin"||r==="owner"||r==="manager"||r==="관리자"||me?.is_admin===true;
+  },[me]);
 
-  const isAdmin = useMemo(() => {
-  const r = String(me?.role || "").trim().toLowerCase();
-  // 서버가 role을 '관리자'/'owner'/'manager'처럼 줄 수도 있고 is_admin 플래그가 있을 수도 있으니 모두 허용
-  return r === "admin" || r === "owner" || r === "manager" || r === "관리자" || me?.is_admin === true;
-  }, [me]);
-
-
-  // 로그인 실행
-  async function doLogin(e) {
-    e?.preventDefault();
-    setLoggingIn(true);
-    setAuthErr("");
-    try {
-      const { data } = await axios.post(`${API_BASE}/auth/login`, { username: loginId, password: loginPw });
-      const t = data?.access_token;
-      if (!t) throw new Error("토큰 없음");
+  /* 로그인/로그아웃 */
+  async function doLogin(e){
+    e?.preventDefault(); setLoggingIn(true); setAuthErr("");
+    try{
+      const { data } = await axios.post(`${API_BASE}/auth/login`, { username:loginId, password:loginPw });
+      const t = data?.access_token; if(!t) throw new Error("토큰 없음");
       localStorage.setItem("glefit_token", t);
-      if (rememberId) {
-        localStorage.setItem("glefit_saved_admin_id", loginId);
-      } else {
-        localStorage.removeItem("glefit_saved_admin_id");
-      }
-      setAuthHeader(t);
-      setToken(t);
-      await verifyToken();
-      setLoginPw("");
-    } catch (e) {
-      setAuthErr(e?.response?.data?.error || "로그인 실패");
-    } finally {
-      setLoggingIn(false);
-    }
+      rememberId ? localStorage.setItem("glefit_saved_admin_id", loginId) : localStorage.removeItem("glefit_saved_admin_id");
+      setAuthHeader(t); setToken(t); await verifyToken(); setLoginPw("");
+    }catch(e){ setAuthErr(e?.response?.data?.error || "로그인 실패"); }
+    finally{ setLoggingIn(false); }
   }
+  function doLogout(){ localStorage.removeItem("glefit_token"); setAuthHeader(""); setToken(""); setMe(null); setPingOK(false); }
 
-  function doLogout() {
-    localStorage.removeItem("glefit_token");
-    setAuthHeader("");
-    setToken("");
-    setMe(null);
-    setPingOK(false);
-  }
-
-  // 목록 로딩
-  const refreshList = useCallback(async () => {
+  /* 목록 */
+  const refreshList = useCallback(async ()=>{
     setListLoading(true);
-    try {
+    try{
       const { data } = await axios.get(`${API_BASE}/admin/list_users`, { params: q ? { q } : undefined });
-      setRows(data.users || []);
-    } catch (e) {
-      setAuthErr(e?.response?.data?.error || "목록 불러오기 실패");
-    } finally {
-      setListLoading(false);
-    }
-  }, [q]);
+      setRows(data?.users || []);
+    } finally { setListLoading(false); }
+  },[q]);
+  useEffect(()=>{ if(token) refreshList(); },[token, refreshList]);
 
-  useEffect(() => {
-    if (token) refreshList();
-  }, [token, refreshList]);
+  /* usage */
+  const loadUsageSummary = useCallback(async ()=>{
+    if(!token) return; setUsageLoading(true);
+    try{
+      const { data } = await axios.get(`${API_BASE}/admin/usage_summary`);
+      setUsageSummary({ usage:data?.usage||[], errors:data?.errors||[], agreements:data?.agreements||[] });
+    } finally { setUsageLoading(false); }
+  },[token]);
+  useEffect(()=>{ if(token) loadUsageSummary(); },[token, loadUsageSummary]);
 
-  // 발급/연장
-  async function onIssue(e) {
-    e?.preventDefault();
-    setActionLoading(true);
-    try {
-      const payload = { ...fUser };
-      if (!payload.password) delete payload.password; // 기존 유저 연장 시 비번 생략
+  /* traffic */
+  const loadTraffic = useCallback(async ()=>{
+    if(!token) return; setTrafficLoading(true);
+    try{
+      const params = new URLSearchParams();
+      if(gran) params.set("granularity", gran);
+      if(range.start) params.set("start", range.start);
+      if(range.end) params.set("end", range.end);
+      const { data } = await axios.get(`${API_BASE}/admin/traffic_summary?`+params.toString());
+      setTraffic({ series:data?.series||[], totals:data?.totals || { visits:0, logins:0, unique_users:0 }});
+    } finally { setTrafficLoading(false); }
+  },[token, gran, range]);
+  useEffect(()=>{ if(token) loadTraffic(); },[token, loadTraffic]);
+
+  /* 활성/비번/삭제 */
+  async function onIssue(e){
+    e?.preventDefault(); setActionLoading(true);
+    try{
+      const payload = { ...fUser }; if(!payload.password) delete payload.password;
       const { data } = await axios.post(`${API_BASE}/admin/issue_user`, payload);
       await refreshList();
-      setFUser({ username: fUser.username, password: "", days: fUser.days || 32, site_url: fUser.site_url || "", note: "" });
+      setFUser({ username:fUser.username, password:"", days:fUser.days||32, site_url:fUser.site_url||"", note:"" });
       alert(`처리 완료: ${data.username} · 만료 ${data.paid_until}\n잔여 ${data.remaining_days}일`);
-    } catch (e) {
-      alert(e?.response?.data?.error || "발급/연장 실패");
-    } finally {
-      setActionLoading(false);
-    }
+    } finally { setActionLoading(false); }
+  }
+  async function onToggleActive(u, next){
+    try{ await axios.post(`${API_BASE}/admin/set_active`, { username:u.username, is_active: next }); await refreshList(); }
+    catch(e){ alert(e?.response?.data?.error || "상태 변경 실패"); }
+  }
+  async function onResetPassword(u){
+    const p = prompt(`새 비밀번호 입력 (사용자: ${u.username})`); if(!p) return;
+    try{ await axios.post(`${API_BASE}/admin/reset_password`, { username:u.username, new_password:p }); alert("비밀번호 초기화 완료"); }
+    catch(e){ alert(e?.response?.data?.error || "비밀번호 초기화 실패"); }
+  }
+  async function onDeleteUser(u){
+    if(!window.confirm(`정말 삭제할까요? (${u.username})`)) return;
+    try{ await axios.post(`${API_BASE}/admin/delete_user`, { username:u.username }); await refreshList(); }
+    catch(e){ alert(e?.response?.data?.error || "삭제 실패"); }
   }
 
-  // 활성 토글
-  async function onToggleActive(u, next) {
-    try {
-      await axios.post(`${API_BASE}/admin/set_active`, { username: u.username, is_active: next });
-      await refreshList();
-    } catch (e) {
-      alert(e?.response?.data?.error || "상태 변경 실패");
-    }
-  }
+  /* 드래그 스크롤 refs */
+  const usersScrollRef = useDragScroll();
+  const usageScrollRef = useDragScroll();
+  const trafficScrollRef = useDragScroll();
 
-  // 비번 초기화
-  async function onResetPassword(u) {
-    const p = prompt(`새 비밀번호 입력 (사용자: ${u.username})`);
-    if (!p) return;
-    try {
-      await axios.post(`${API_BASE}/admin/reset_password`, { username: u.username, new_password: p });
-      alert("비밀번호 초기화 완료");
-    } catch (e) {
-      alert(e?.response?.data?.error || "비밀번호 초기화 실패");
-    }
-  }
-
-  // 삭제
-  async function onDeleteUser(u) {
-    if (!window.confirm(`정말 삭제할까요? (${u.username})`)) return;
-    try {
-      await axios.post(`${API_BASE}/admin/delete_user`, { username: u.username });
-      await refreshList();
-    } catch (e) {
-      alert(e?.response?.data?.error || "삭제 실패");
-    }
-  }
-
-  // ========== UI 렌더링 ==========
-  // 1) 토큰이 없거나, me가 admin이 아니면 로그인 카드
+  /* ===== 로그인 화면 ===== */
   if (!token || !pingOK || !isAdmin) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-6 space-y-6">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-bold">관리자 로그인</h1>
-            <p className="text-sm text-gray-600">관리자 계정으로 로그인해 아이디 발급/연장을 수행하세요.</p>
-          </div>
-
-          <form onSubmit={doLogin} className="space-y-4">
-            <div>
-              <label className="text-sm text-gray-600">아이디</label>
-              <input className="w-full border rounded-lg px-3 py-2" value={loginId} onChange={e=>setLoginId(e.target.value)} required />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600">비밀번호</label>
-              <input type="password" className="w-full border rounded-lg px-3 py-2" value={loginPw} onChange={e=>setLoginPw(e.target.value)} required />
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="inline-flex items-center gap-2 text-sm text-gray-700">
-                <input type="checkbox" checked={rememberId} onChange={e=>setRememberId(e.target.checked)} />
-                아이디 저장
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#f8fafc",padding:16}}>
+        <InlineStyle />
+        <div className="card" style={{width:"100%",maxWidth:420}}>
+          <h1 style={{fontSize:24,fontWeight:700,marginBottom:6}}>관리자 로그인</h1>
+          <p className="small" style={{marginBottom:16}}>관리자 계정으로 로그인해 아이디 발급/연장을 수행하세요.</p>
+          <form onSubmit={doLogin} style={{display:"grid",gap:12}}>
+            <div><label className="small">아이디</label><input className="input" value={loginId} onChange={e=>setLoginId(e.target.value)} required/></div>
+            <div><label className="small">비밀번호</label><input type="password" className="input" value={loginPw} onChange={e=>setLoginPw(e.target.value)} required/></div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <label className="small" style={{display:"inline-flex",gap:8,alignItems:"center"}}>
+                <input type="checkbox" checked={rememberId} onChange={e=>setRememberId(e.target.checked)}/> 아이디 저장
               </label>
-              {authErr && <span className="text-red-600 text-sm">{authErr}</span>}
+              {authErr && <span style={{color:"#dc2626",fontSize:12}}>{authErr}</span>}
             </div>
-            <button type="submit" disabled={loggingIn} className="w-full py-2 rounded-xl bg-black text-white disabled:opacity-60">
-              {loggingIn ? "로그인 중..." : "로그인"}
-            </button>
+            <button type="submit" className="btn" disabled={loggingIn} style={{background:"#000",color:"#fff",borderColor:"#000"}}>{loggingIn?"로그인 중...":"로그인"}</button>
           </form>
         </div>
       </div>
     );
   }
 
-  // 2) 관리자 기능 화면
+  /* ===== 관리자 화면 ===== */
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-8">
-      {/* 상단 바 (3열: 좌 상태 · 중 공지 · 우 버튼) */}
-<div className="grid grid-cols-[auto,1fr,auto] items-center gap-3 rounded-xl p-3"
-     style={{ background:"#0b1324", color:"#fff" }}>
-  {/* 좌: 상태 */}
-  <div className="text-[13px] opacity-95">
-    <span className="px-2 py-0.5 rounded-full" style={{background:"#2b334a"}}>일반</span>
-    <span className="ml-2">· 만료 <b>{me?.paid_until ? me.paid_until.slice(0,10) : "-"}</b></span>
-    <span className="ml-1">(<b>{me?.remaining_days ?? "-"}</b>일 남음)</span>
-  </div>
+    <div className="shell">
+      <InlineStyle />
 
-  {/* 중: 공지(없으면 비움) */}
-  <div
-  title={notice?.trim() ? notice : "공지 없음"}
-  className="text-center text-[13px] opacity-90 truncate"
->
-  {notice?.trim() ? notice : "— 공지를 입력하세요 —"}
-</div>
+      {/* topbar */}
+      <div className="topbar">
+        <div style={{fontSize:13,opacity:.95}}>
+          <span className="badge">일반</span>
+          <span style={{marginLeft:8}}>· 만료 <b>{me?.paid_until ? me.paid_until.slice(0,10) : "-"}</b></span>
+          <span style={{marginLeft:4}}>(<b>{me?.remaining_days ?? "-"}</b>일 남음)</span>
+        </div>
+        <div title={notice?.trim()?notice:"공지 없음"} style={{textAlign:"center",fontSize:13,opacity:.9,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+          {notice?.trim()?notice:"— 공지를 입력하세요 —"}
+        </div>
+        <div className="toolbar">
+          <button className="btn" onClick={()=>{ const v = prompt("상단 공지 문구를 입력하세요 (빈칸=숨김)", notice || ""); if(v!==null) setNotice(v); }}>공지 수정</button>
+          <button className="btn" onClick={doLogout} style={{background:"#ff5a5a",color:"#fff",borderColor:"#ff5a5a"}}>로그아웃</button>
+        </div>
+      </div>
 
-  {/* 우: 버튼들 */}
-  <div className="justify-self-end flex items-center gap-2">
-    {/* (선택) 관리자만 공지 수정 버튼 */}
-    {isAdmin && (
+      {/* grid: 좌(조작 고정) / 중(사용자 목록 크게) / 우(통계/트래픽) */}
+      <div className="grid">
+        {/* 좌: 발급/연장 */}
+<div className="sticky" style={{display:"grid",gap:16}}>
+  <form onSubmit={onIssue} className="card card-tight form-compact">
+    <h2 className="h2">아이디 발급 / 연장</h2>
+
+    {/* 아이디 */}
+    <div className="row">
+      <label>아이디 (사용자 이름)</label>
+      <input
+  className="input"
+  required
+  value={fUser.username}
+  onChange={e=>setFUser(v=>({...v, username:e.target.value}))}
+  onBlur={e=>setFUser(v=>({...v, username: (e.target.value||"").trim().toLowerCase()}))}
+  translate="no"
+  lang="en"
+  spellCheck={false}
+  autoCorrect="off"
+  autoCapitalize="off"
+  inputMode="latin"
+  autoComplete="off"
+  pattern="^[a-z0-9._-]{3,32}$"
+  title="영문 소문자/숫자/.-_ 만 3~32자"
+/>
+    </div>
+
+    {/* 초기 비밀번호 */}
+    <div className="row">
+      <label>초기 비밀번호 (신규 시 필수)</label>
+      <input
+        className="input"
+        placeholder="기존 연장 시 생략"
+        value={fUser.password}
+        onChange={e=>setFUser(v=>({...v, password:e.target.value}))}
+      />
+    </div>
+
+    {/* 기간 */}
+    <div className="row">
+      <label>기간(일)</label>
+      <div className="actions">
+        <input
+          type="number"
+          min={1}
+          className="input"
+          style={{width:100}}
+          value={fUser.days}
+          onChange={e=>setFUser(v=>({...v, days:Number(e.target.value||0)}))}
+        />
+        <div className="quick-days">
+          {[32,60,90].map(d=>(
+            <button type="button" key={d} onClick={()=>setFUser(v=>({...v, days:d}))}>{d}일</button>
+          ))}
+        </div>
+      </div>
+    </div>
+
+    {/* 도메인 */}
+    <div className="row">
+      <label>접속 허용 도메인 (site_url)</label>
+      <input
+        className="input"
+        placeholder="예: https://partner.example.com"
+        value={fUser.site_url}
+        onChange={e=>setFUser(v=>({...v, site_url:e.target.value}))}
+      />
+    </div>
+
+    {/* 메모 */}
+    <div className="row">
+      <label>메모 (업체명/담당자 등)</label>
+      <textarea
+        className="textarea"
+        rows={4}
+        placeholder="예) ○○병원 / 담당자 010-1234-5678 / 특이사항…"
+        value={fUser.note}
+        onChange={e=>setFUser(v=>({...v, note:e.target.value}))}
+      />
+      <div className="text-xs" style={{textAlign:"right", color:"#6b7280"}}>
+        {(fUser.note?.length||0)}자
+      </div>
+    </div>
+
+    {/* 실행 버튼 */}
+    <div className="actions">
       <button
-        onClick={()=>{
-          const v = prompt("상단 공지 문구를 입력하세요 (빈칸=숨김)", notice || "");
-          if (v !== null) setNotice(v);
-        }}
-        className="px-3 py-2 rounded-lg border"
-        style={{ background:"#16223a", borderColor:"#334", color:"#fff" }}
+        type="submit"
+        disabled={actionLoading}
+        className="btn"
+        style={{background:"#000",color:"#fff",borderColor:"#000"}}
       >
-        공지 수정
+        {actionLoading ? "처리중..." : "발급 / 연장 실행"}
       </button>
-    )}
-    <button
-      onClick={doLogout}
-      className="px-3 py-2 rounded-lg"
-      style={{ background:"#ff5a5a", color:"#fff" }}
-    >
-      로그아웃
-    </button>
-  </div>
+    </div>
+  </form>
 </div>
 
-      {/* 발급/연장 폼 */}
-      <form onSubmit={onIssue} className="border rounded-2xl p-5 space-y-4 shadow-sm">
-        <h2 className="text-lg font-semibold">아이디 발급 / 연장</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="text-sm text-gray-600">아이디 (username)</label>
-            <input className="w-full border rounded-lg px-3 py-2" required value={fUser.username} onChange={(e)=>setFUser(v=>({...v, username:e.target.value}))} />
-          </div>
-          <div>
-            <label className="text-sm text-gray-600">초기 비밀번호 (신규 시 필수)</label>
-            <input className="w-full border rounded-lg px-3 py-2" placeholder="기존 연장 시 생략" value={fUser.password} onChange={(e)=>setFUser(v=>({...v, password:e.target.value}))} />
-          </div>
-          <div>
-            <label className="text-sm text-gray-600">기간(days)</label>
-            <div className="flex gap-2">
-              <input type="number" min={1} className="w-32 border rounded-lg px-3 py-2" value={fUser.days} onChange={(e)=>setFUser(v=>({...v, days:Number(e.target.value||0)}))} />
-              <div className="flex gap-2">
-                {[32,60,90].map(d=> (
-                  <button type="button" key={d} className="px-2 py-1 border rounded hover:bg-gray-100" onClick={()=>setFUser(v=>({...v, days:d}))}>{d}일</button>
-                ))}
-              </div>
+        {/* 중: 사용자 목록 (중앙, 크게) */}
+        <div className="card" style={{height:"fit-content"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
+            <h2 className="h2">사용자 목록</h2>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <input className="input" placeholder="아이디 검색" value={q} onChange={e=>setQ(e.target.value)} style={{width:220}}/>
+              <button className="btn" onClick={refreshList}>검색</button>
             </div>
           </div>
-          <div>
-            <label className="text-sm text-gray-600">글핏 주소 제한 (site_url)</label>
-            <input className="w-full border rounded-lg px-3 py-2" placeholder="예: https://partner.example.com" value={fUser.site_url} onChange={(e)=>setFUser(v=>({...v, site_url:e.target.value}))} />
-          </div>
-          <div className="md:col-span-2">
-  <label className="text-sm text-gray-600">메모 (업체명/담당자 등)</label>
-  <textarea
-    className="w-full border rounded-lg px-3 py-2 whitespace-pre-wrap break-words resize-y"
-    rows={6}
-    placeholder="예) ○○병원 / 담당자 홍길동 010-1234-5678 / 특이사항…"
-    value={fUser.note}
-    onChange={(e)=>setFUser(v=>({...v, note:e.target.value}))}
-    style={{ minHeight: 120, lineHeight: 1.5 }}
-  />
-  <div className="text-right text-xs text-gray-500">{fUser.note?.length || 0}자</div>
-</div>
-        </div>
-        <div className="flex items-center gap-3">
-          <button type="submit" disabled={actionLoading} className="px-4 py-2 rounded-xl bg-black text-white disabled:opacity-60">{actionLoading?"처리중...":"발급 / 연장 실행"}</button>
-        </div>
-      </form>
-{/* [ADD] 운영 통계 카드 */}
-<div className="border rounded-2xl p-5 shadow-sm">
-  <div className="flex items-center justify-between mb-4 gap-3">
-    <h2 className="text-lg font-semibold">운영 통계</h2>
-    <div className="flex gap-2 items-center">
-      <button
-        className="px-3 py-2 border rounded-lg bg-white hover:bg-gray-100"
-        onClick={loadUsageSummary}
-        disabled={usageLoading}
+
+          <div ref={usersScrollRef} className="scrollx">
+            <table className="table minw-users">
+              <thead>
+  <tr>
+    <th style={{width:160}}>아이디</th>
+    <th style={{width:66}}>활성</th>
+    <th style={{width:66}}>동시</th>
+    <th style={{width:70}}>남은</th>
+    <th style={{width:120}}>만료일</th>
+    <th style={{width:260}}>메모</th>
+    <th style={{width:220}}>제한 도메인</th> {/* (= site_url) */}
+    <th style={{width:120}}>생성일</th>
+    <th style={{width:280}}>작업</th>
+  </tr>
+</thead>
+
+<tbody>
+  {listLoading ? (
+    <tr><td colSpan={9} align="center" className="small">불러오는 중...</td></tr>
+  ) : rows.length === 0 ? (
+    <tr><td colSpan={9} align="center" className="small">데이터 없음</td></tr>
+  ) : rows.map(u => (
+    <tr key={u.username}>
+      {/* 아이디: 폭 확대 + 줄바꿈 금지 */}
+      <td className="mono" style={{ whiteSpace: "nowrap" }} translate="no">
+  <span className="notranslate" translate="no" lang="en">{u.username}</span>
+</td>
+
+
+      {/* 활성 */}
+      <td align="center">
+        <input
+          type="checkbox"
+          checked={!!u.is_active}
+          onChange={(e)=>onToggleActive(u, e.target.checked)}
+          title={u.is_active ? "활성 ON" : "활성 OFF"}
+        />
+      </td>
+
+      {/* 동시접속 허용 */}
+      <td align="center">
+        <input
+          type="checkbox"
+          checked={!!u.allow_concurrent}
+          onChange={async (e)=>{
+            try{
+              setActionLoading(true);
+              await axios.post(`${API_BASE}/admin/set_allow_concurrent`, { username:u.username, allow:e.target.checked });
+              await refreshList();
+            } finally { setActionLoading(false); }
+          }}
+          title={u.allow_concurrent ? "동시접속 허용" : "동시접속 차단"}
+        />
+      </td>
+
+      {/* 남은일수: 임박 강조만 유지 */}
+      <td align="center" style={{whiteSpace:"nowrap"}}>
+        <span style={{color:u.remaining_days<=3?"#dc2626":"inherit",fontWeight:u.remaining_days<=3?600:400}}>
+          {u.remaining_days}
+        </span>
+      </td>
+
+      {/* 만료일: compact */}
+      <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.paid_until)}</td>
+
+      {/* 메모: 한 줄/말줄임 + 툴팁(hover로 풀텍스트 보기) */}
+      <td
+        title={u.note || ""}
+        style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:260}}
       >
-        {usageLoading ? "새로고침..." : "새로고침"}
-      </button>
-    </div>
-  </div>
+        {u.note?.trim() ? u.note : "-"}
+      </td>
 
-  {/* 요약 바 */}
-  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-    <div className="p-3 rounded-lg border bg-gray-50">
-      <div className="text-xs text-gray-500">동의(환불규정) 기록</div>
-      <div className="text-xl font-semibold">{usageSummary.agreements?.length || 0}</div>
-    </div>
-    <div className="p-3 rounded-lg border bg-gray-50">
-      <div className="text-xs text-gray-500">에러 사용자 수</div>
-      <div className="text-xl font-semibold">{usageSummary.errors?.length || 0}</div>
-    </div>
-    <div className="p-3 rounded-lg border bg-gray-50">
-      <div className="text-xs text-gray-500">집계 사용자 수</div>
-      <div className="text-xl font-semibold">{usageSummary.usage?.length || 0}</div>
-    </div>
-  </div>
+      {/* 제한 도메인(site_url): 한 줄/말줄임 + 툴팁 */}
+      <td
+        className="mono"
+        title={u.site_url || "-"}
+        style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}
+      >
+        {u.site_url || "-"}
+      </td>
 
-  {/* 사용량 표 */}
-  <div className="overflow-x-auto mb-6">
-    <table className="min-w-[960px] border">
-      <thead>
-        <tr className="bg-gray-50 text-sm">
-          <th className="p-2 border w-40">아이디</th>
-          <th className="p-2 border w-20">verify</th>
-          <th className="p-2 border w-20">policy</th>
-          <th className="p-2 border w-28">dedup_inter</th>
-          <th className="p-2 border w-28">dedup_intra</th>
-          <th className="p-2 border w-24">files합</th>
-        </tr>
-      </thead>
-      <tbody>
-        {usageSummary.usage?.length ? usageSummary.usage.map(u => (
-          <tr key={u.username} className="text-sm hover:bg-gray-50">
-            <td className="p-2 border font-mono">{u.username}</td>
-            <td className="p-2 border text-center">{u.verify || 0}</td>
-            <td className="p-2 border text-center">{u.policy || 0}</td>
-            <td className="p-2 border text-center">{u.dedup_inter || 0}</td>
-            <td className="p-2 border text-center">{u.dedup_intra || 0}</td>
-            <td className="p-2 border text-center">{u.files || 0}</td>
-          </tr>
-        )) : (
-          <tr><td className="p-4 text-center text-gray-500" colSpan={6}>데이터 없음</td></tr>
-        )}
-      </tbody>
-    </table>
-  </div>
+      {/* 생성일: compact */}
+      <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.created_at)}</td>
 
-  {/* 에러 표 */}
-  <div className="overflow-x-auto">
-    <table className="min-w-[720px] border">
-      <thead>
-        <tr className="bg-gray-50 text-sm">
-          <th className="p-2 border w-40">아이디</th>
-          <th className="p-2 border w-24">에러수</th>
-          <th className="p-2 border w-56">마지막</th>
-        </tr>
-      </thead>
-      <tbody>
-        {usageSummary.errors?.length ? usageSummary.errors.map(e => (
-          <tr key={e.username} className="text-sm hover:bg-gray-50">
-            <td className="p-2 border font-mono">{e.username || "-"}</td>
-            <td className="p-2 border text-center">{e.errors || 0}</td>
-            <td className="p-2 border">{e.last || "-"}</td>
-          </tr>
-        )) : (
-          <tr><td className="p-4 text-center text-gray-500" colSpan={3}>에러 기록 없음</td></tr>
-        )}
-      </tbody>
-    </table>
-  </div>
-</div>
-
-      {/* 검색/목록 */}
-      <div className="border rounded-2xl p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-4 gap-3">
-          <h2 className="text-lg font-semibold">사용자 목록</h2>
-          <div className="flex gap-2 items-center">
-            <input className="border rounded-lg px-3 py-2" placeholder="아이디 검색" value={q} onChange={(e)=>setQ(e.target.value)} />
-            <button className="px-3 py-2 border rounded-lg bg-white hover:bg-gray-100" onClick={refreshList}>검색</button>
+      {/* 작업: 작은 버튼 4개를 한 줄로 */}
+      <td>
+        <div style={{display:"flex",gap:6,flexWrap:"nowrap",overflowX:"auto"}}>
+          <button className="btn-sm" onClick={()=>setFUser(v=>({...v, username:u.username}))}>연장대상</button>
+          <button className="btn-sm" onClick={()=>onResetPassword(u)}>비번초기화</button>
+          <button
+            className="btn-sm"
+            onClick={()=>{
+              const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
+              if(!add) return;
+              setActionLoading(true);
+              axios.post(`${API_BASE}/admin/issue_user`, { username:u.username, days:add, note:"+연장" })
+                .then(()=>refreshList())
+                .finally(()=>setActionLoading(false));
+            }}
+          >+연장</button>
+          <button className="btn-sm" style={{color:"#dc2626",borderColor:"#fecaca"}} onClick={()=>onDeleteUser(u)}>삭제</button>
+        </div>
+      </td>
+    </tr>
+  ))}
+</tbody>
+            </table>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          {/* ▶ 표 너비 확대 */}
-          <table className="min-w-[1200px] border">
-            <thead>
-              <tr className="bg-gray-50 text-sm">
-                <th className="p-2 border w-48">아이디</th>
-                <th className="p-2 border w-20">활성</th>
-                <th className="p-2 border w-24">동시</th>
-                <th className="p-2 border w-24">남은일수</th>
-                <th className="p-2 border w-40">만료일</th>
-                <th className="p-2 border w-[560px]">메모</th>
-                <th className="p-2 border w-[420px]">글핏주소</th>
-                <th className="p-2 border w-40">생성일</th>
-                <th className="p-2 border w-64">작업</th>
-              </tr>
-            </thead>
-            <tbody>
-              {listLoading ? (
-  <tr><td className="p-4 text-center" colSpan={9}>불러오는 중...</td></tr>
-) : rows.length === 0 ? (
-  <tr><td className="p-6 text-center text-gray-500" colSpan={9}>데이터 없음</td></tr>
-) : (
-                rows.map((u) => (
-                  <tr key={u.username} className="text-sm hover:bg-gray-50">
-  <td className="p-2 border font-mono">{u.username}</td>
+        {/* 우: 운영 통계 + 트래픽 (보조) */}
+        <div className="right-col">
+          {/* 운영 통계 */}
+          <div className="card">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <h2 className="h2">운영 통계</h2>
+              <button className="btn" onClick={loadUsageSummary} disabled={usageLoading}>
+                {usageLoading ? "새로고침..." : "새로고침"}
+              </button>
+            </div>
 
-  {/* 활성 */}
-  <td className="p-2 border">
-    <label className="inline-flex items-center gap-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={!!u.is_active}
-        onChange={(e)=>onToggleActive(u, e.target.checked)}
-      />
-      <span>{u.is_active ? "ON" : "OFF"}</span>
-    </label>
-  </td>
+            <div className="kpis" style={{marginBottom:10}}>
+              <div className="card" style={{padding:12}}><div className="small">동의(환불규정) 기록</div><div style={{fontSize:18,fontWeight:600}}>{usageSummary.agreements?.length||0}</div></div>
+              <div className="card" style={{padding:12}}><div className="small">에러 사용자 수</div><div style={{fontSize:18,fontWeight:600}}>{usageSummary.errors?.length||0}</div></div>
+              <div className="card" style={{padding:12}}><div className="small">집계 사용자 수</div><div style={{fontSize:18,fontWeight:600}}>{usageSummary.usage?.length||0}</div></div>
+            </div>
 
-  {/* 동시접속 허용 */}
-  <td className="p-2 border">
-    <label className="inline-flex items-center gap-2 cursor-pointer" title="동시접속 허용">
-      <input
-        type="checkbox"
-        checked={!!u.allow_concurrent}
-        onChange={async (e) => {
-          try {
-            setActionLoading(true);
-            await axios.post(`${API_BASE}/admin/set_allow_concurrent`, {
-              username: u.username,
-              allow: e.target.checked
-            });
-            await refreshList();
-          } finally {
-            setActionLoading(false);
-          }
-        }}
-      />
-      <span>{u.allow_concurrent ? "허용" : "차단"}</span>
-    </label>
-  </td>
+            <div ref={usageScrollRef} className="scrollx">
+              <table className="table minw-usage">
+                <thead><tr><th>아이디</th><th>verify</th><th>policy</th><th>dedup_inter</th><th>dedup_intra</th><th>files합</th></tr></thead>
+                <tbody>
+                  {usageSummary.usage?.length ? usageSummary.usage.map(u=>(
+                    <tr key={u.username}>
+                      <td className="mono">{u.username}</td>
+                      <td align="center">{u.verify||0}</td>
+                      <td align="center">{u.policy||0}</td>
+                      <td align="center">{u.dedup_inter||0}</td>
+                      <td align="center">{u.dedup_intra||0}</td>
+                      <td align="center">{u.files||0}</td>
+                    </tr>
+                  )) : <tr><td colSpan={6} align="center" className="small">데이터 없음</td></tr>}
+                </tbody>
+              </table>
+            </div>
 
-  {/* 남은일수 */}
-  <td className="p-2 border text-center">
-    <span className={u.remaining_days<=3 ? "text-red-600 font-semibold" : ""}>
-      {u.remaining_days}
-    </span>
-  </td>
+            <div ref={usageScrollRef} className="scrollx" style={{marginTop:10}}>
+              <table className="table minw-usage">
+                <thead><tr><th>아이디</th><th>에러수</th><th>마지막</th></tr></thead>
+                <tbody>
+                  {usageSummary.errors?.length ? usageSummary.errors.map(e=>(
+                    <tr key={e.username}>
+                      <td className="mono">{e.username||"-"}</td>
+                      <td align="center">{e.errors||0}</td>
+                      <td>{e.last||"-"}</td>
+                    </tr>
+                  )) : <tr><td colSpan={3} align="center" className="small">에러 기록 없음</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-  {/* 만료일 */}
-  <td className="p-2 border">{fmtDate(u.paid_until)}</td>
+          {/* 트래픽 */}
+          <div className="card">
+            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"end",justifyContent:"space-between",marginBottom:10}}>
+              <h2 className="h2">접속·로그인 트래픽</h2>
+              <div className="toolbar">
+                <label className="small">기간</label>
+                <input type="date" className="input" style={{width:150}}
+                  value={range.start} onChange={e=>setRange(v=>({...v,start:e.target.value}))}/>
+                <span className="small">~</span>
+                <input type="date" className="input" style={{width:150}}
+                  value={range.end} onChange={e=>setRange(v=>({...v,end:e.target.value}))}/>
+                <select className="select" style={{width:110}} value={gran} onChange={e=>setGran(e.target.value)}>
+                  <option value="day">일별</option>
+                  <option value="week">주별</option>
+                  <option value="month">월별</option>
+                </select>
+                <button className="btn" onClick={loadTraffic} disabled={trafficLoading}>{trafficLoading?"불러오는 중...":"새로고침"}</button>
+              </div>
+            </div>
 
-  {/* 메모 */}
-  <td className="p-2 border whitespace-pre-wrap break-words max-w-[560px]">
-    {u.note?.trim() ? u.note : "-"}
-  </td>
+            <div className="kpis" style={{marginBottom:10}}>
+              <div className="card" style={{padding:12}}><div className="small">총 방문수</div><div style={{fontSize:20,fontWeight:700}}>{traffic?.totals?.visits ?? 0}</div></div>
+              <div className="card" style={{padding:12}}><div className="small">총 로그인수</div><div style={{fontSize:20,fontWeight:700}}>{traffic?.totals?.logins ?? 0}</div></div>
+              <div className="card" style={{padding:12}}><div className="small">유니크 로그인(ID)</div><div style={{fontSize:20,fontWeight:700}}>{traffic?.totals?.unique_users ?? 0}</div></div>
+            </div>
 
-  {/* 글핏주소 */}
-  <td className="p-2 border max-w-[480px] truncate" title={u.site_url || "-"}>
-    {u.site_url || "-"}
-  </td>
-
-  {/* 생성일 */}
-  <td className="p-2 border">{fmtDate(u.created_at)}</td>
-
-  {/* 작업 */}
-  <td className="p-2 border">
-    <div className="flex flex-wrap gap-2">
-      <button
-        className="px-2 py-1 border rounded"
-        onClick={() => setFUser(v=>({...v, username:u.username}))}
-      >
-        연장 대상
-      </button>
-      <button
-        className="px-2 py-1 border rounded"
-        onClick={() => onResetPassword(u)}
-      >
-        비번초기화
-      </button>
-      <button
-        className="px-2 py-1 border rounded"
-        onClick={() => {
-          const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
-          if (!add) return;
-          setActionLoading(true);
-          axios.post(`${API_BASE}/admin/issue_user`, { username: u.username, days: add, note: "+연장" })
-            .then(()=>refreshList())
-            .finally(()=>setActionLoading(false));
-        }}
-      >
-        +연장
-      </button>
-      <button
-        className="px-2 py-1 border rounded text-red-600"
-        onClick={() => onDeleteUser(u)}
-      >
-        삭제
-      </button>
-    </div>
-  </td>
-</tr>
-
-                ))
-              )}
-            </tbody>
-          </table>
+            <div ref={trafficScrollRef} className="scrollx">
+              <table className="table minw-traffic">
+                <thead><tr><th>버킷</th><th>방문수</th><th>로그인수</th><th>Active Users*</th></tr></thead>
+                <tbody>
+                  {Array.isArray(traffic?.series) && traffic.series.length > 0 ? traffic.series.map(r=>(
+                    <tr key={r.bucket}>
+                      <td className="mono">{r.bucket}</td>
+                      <td align="right">{r.visits ?? 0}</td>
+                      <td align="right">{r.logins ?? 0}</td>
+                      <td align="right">{r.active_users ?? "-"}</td>
+                    </tr>
+                  )) : <tr><td colSpan={4} align="center" className="small">데이터가 없습니다</td></tr>}
+                </tbody>
+              </table>
+              <div className="small" style={{marginTop:6}}>* 주/월 집계에서는 기간 내 유니크 로그인 수가 고정값으로 표시됩니다.</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

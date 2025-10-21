@@ -147,13 +147,29 @@ axios.interceptors.response.use(
   (res) => res,
   (err) => {
     const s = err?.response?.status;
+
     if (s === 401) {
-      clearToken();
-      alert("로그인이 필요합니다.");
-      if (typeof window !== "undefined") window.location.reload();
-    } else if (s === 402) {
-      alert("결제 대기 또는 이용기간 만료입니다. 관리자에게 문의하세요.");
+      // 1) 토큰만 깨끗이 지우고
+      clearToken(); // 이미 파일에 있는 함수
+
+      // 2) 강한 새로고침 대신 "부드러운 교체"
+      //    - 히스토리에 남기지 않도록 replace 사용
+      //    - 번쩍임 줄이려고 requestAnimationFrame으로 다음 프레임에 실행
+      if (typeof window !== "undefined") {
+        requestAnimationFrame(() => {
+          window.location.replace(window.location.pathname);
+        });
+      }
+      // 3) alert()는 제거 (번쩍임 원인)
+      return Promise.reject(err);
     }
+
+    if (s === 402) {
+      // 필요한 경우에만 안내 (402는 결제/만료)
+      // alert("결제 대기 또는 이용기간 만료입니다. 관리자에게 문의하세요.");
+      // → 팝업 대신 페이지 상단 배너/토스트가 있다면 그걸로 안내하는 편이 부드러움
+    }
+
     return Promise.reject(err);
   }
 );

@@ -190,9 +190,32 @@ def migrate_ops_tables():
         username TEXT PRIMARY KEY,
         agreed_at TEXT
     )""")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS visit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,            -- 로그인 전/후 모두 기록(없으면 빈문자)
+        path TEXT,                -- 프론트가 보내는 현재 경로/스크린 명
+        ip TEXT,
+        user_agent TEXT,
+        created_at TEXT
+    )""")
+
     conn.commit()
     conn.close()
 
+def log_visit(username, path):
+    try:
+        ip  = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
+        ua  = request.headers.get("User-Agent") or ""
+        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO visit_logs (username, path, ip, user_agent, created_at) VALUES (?,?,?,?,?)",
+            (username or "", path or "", ip[:120], ua[:300], datetime.utcnow().isoformat())
+        )
+        conn.commit(); conn.close()
+    except Exception:
+        pass
 
 # 마이그레이션 실행
 migrate_users_table()
@@ -389,6 +412,18 @@ RULES = {}   # {"rules":[{...}], ...}
 RULES_INDEX = {}  # {rule_id: rule_obj}
 
 # ================== 유틸 ==================
+
+# === username 규칙: 소문자 영문/숫자/._- 3~32자 ===
+USERNAME_RE = re.compile(r"^[a-z0-9._-]{3,32}$")
+
+def normalize_username(u: str) -> str:
+    # 공백 제거 + 소문자 통일
+    return (u or "").strip().lower()
+
+def validate_username(u: str):
+    if not USERNAME_RE.match(u or ""):
+        raise ValueError("username must be 3-32 chars: a-z, 0-9, dot, underscore, hyphen only")
+
 def search_db(sentence):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -934,6 +969,8 @@ def auth_login():
         "exp": datetime.utcnow() + timedelta(hours=12)
     }, JWT_SECRET, algorithm=JWT_ALG)
 
+    log_usage(username, "login", 0)
+
     return jsonify({"access_token": token, "token_type": "bearer"})
 
 @app.route("/auth/ping", methods=["GET", "OPTIONS"])
@@ -952,6 +989,18 @@ def auth_agree_refund():
                 (username, datetime.utcnow().isoformat()))
     conn.commit(); conn.close()
     return jsonify({"ok": True})
+
+@app.post("/track/visit")
+def track_visit():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        path = (body.get("path") or "/").strip()
+        # 토큰이 있으면 유저명 추출, 없으면 공백 처리
+        username = _username_from_req()
+        log_visit(username, path)
+        return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"ok": False}), 200
 
 @app.route("/auth/me", methods=["GET", "OPTIONS"])
 @require_user
@@ -974,11 +1023,15 @@ def auth_me():
 @require_admin
 def admin_create_user():
     body = request.get_json(force=True, silent=True) or {}
-    username = (body.get("username") or "").strip()
+    username = normalize_username(body.get("username") or "")
     password = body.get("password") or ""
     days = int(body.get("days") or 0)
 
-    if not username or not password:
+    try:
+        validate_username(username)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not password:
         return jsonify({"error":"username/password required"}), 400
 
     conn = sqlite3.connect(DB_PATH)
@@ -1036,13 +1089,17 @@ def admin_issue_user():
     신규: password 필수, 기존: 생략 가능
     """
     body = request.get_json(force=True, silent=True) or {}
-    username = (body.get("username") or "").strip()
+    username = normalize_username(body.get("username") or "")
     password = (body.get("password") or "").strip()
     days     = int(body.get("days") or 32)   # 기본 32일
     site_url = (body.get("site_url") or "").strip()
     role     = (body.get("role") or "user").strip()
     note     = (body.get("note") or "").strip()
 
+    try:
+        validate_username(username)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if not username:
         return jsonify({"error":"username required"}), 400
 
@@ -1175,18 +1232,33 @@ def admin_list_users():
     q = (request.args.get("q") or "").strip()
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
     if q:
+        like = f"%{q}%"
         cur.execute(
-            "SELECT username,is_active,paid_until,role,notes,site_url,created_at,allow_concurrent "
-            "FROM users WHERE username LIKE ? ORDER BY username",
-            (f"%{q}%",)
+            """
+            SELECT username,is_active,paid_until,role,notes,site_url,created_at,allow_concurrent
+            FROM users
+            WHERE username LIKE ? OR IFNULL(notes,'') LIKE ? OR IFNULL(site_url,'') LIKE ?
+            ORDER BY
+              CASE WHEN paid_until IS NULL THEN 1 ELSE 0 END,   -- 만료일 없는 계정은 뒤로
+              datetime(paid_until) ASC,                         -- 만료 임박순
+              username ASC
+            """,
+            (like, like, like)
         )
     else:
         cur.execute(
-            "SELECT username,is_active,paid_until,role,notes,site_url,created_at,allow_concurrent "
-            "FROM users ORDER BY username"
+            """
+            SELECT username,is_active,paid_until,role,notes,site_url,created_at,allow_concurrent
+            FROM users
+            ORDER BY
+              CASE WHEN paid_until IS NULL THEN 1 ELSE 0 END,
+              datetime(paid_until) ASC,
+              username ASC
+            """
         )
     rows = cur.fetchall()
     conn.close()
+
     out = []
     for u,a,pu,r,nt,site,created,ac in rows:
         out.append({
@@ -1198,7 +1270,7 @@ def admin_list_users():
             "note": nt,
             "site_url": site,
             "created_at": created,
-            "allow_concurrent": bool(ac),   # ★ 추가
+            "allow_concurrent": bool(ac),
         })
     return jsonify({"users": out})
 
@@ -1570,6 +1642,165 @@ def admin_adjust_days():
     )
     conn.commit(); conn.close()
     return jsonify({"ok": True, "paid_until": new_until.isoformat()})
+
+@app.get("/admin/usage_summary")
+@require_admin
+def admin_usage_summary():
+    """
+    반환:
+    {
+      "usage":[ {username, verify, policy, dedup_inter, dedup_intra, files}, ... ],
+      "errors":[ {username, errors, last}, ... ],
+      "agreements":[ {username, agreed_at}, ... ]
+    }
+    """
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+
+    # usage_logs 집계
+    cur.execute("""
+      SELECT username,
+             SUM(CASE WHEN action='verify' THEN 1 ELSE 0 END) AS verify,
+             SUM(CASE WHEN action='policy' THEN 1 ELSE 0 END) AS policy,
+             SUM(CASE WHEN action='dedup_inter' THEN 1 ELSE 0 END) AS dedup_inter,
+             SUM(CASE WHEN action='dedup_intra' THEN 1 ELSE 0 END) AS dedup_intra,
+             SUM(files_count) AS files
+      FROM usage_logs
+      GROUP BY username
+      ORDER BY username
+    """)
+    usage = []
+    for row in cur.fetchall():
+        usage.append({
+            "username": row[0] or "",
+            "verify": row[1] or 0,
+            "policy": row[2] or 0,
+            "dedup_inter": row[3] or 0,
+            "dedup_intra": row[4] or 0,
+            "files": row[5] or 0
+        })
+
+    # error_logs 집계(유저별 개수 + 마지막 시각)
+    cur.execute("""
+      SELECT username, COUNT(*),
+             MAX(created_at)
+      FROM error_logs
+      GROUP BY username
+    """)
+    errors = []
+    for row in cur.fetchall():
+        errors.append({
+            "username": row[0] or "",
+            "errors": row[1] or 0,
+            "last": row[2] or ""
+        })
+
+    # 동의 목록
+    cur.execute("SELECT username, agreed_at FROM agreements ORDER BY agreed_at DESC")
+    agreements = [{"username": r[0], "agreed_at": r[1]} for r in cur.fetchall()]
+
+    conn.close()
+    return jsonify({"usage": usage, "errors": errors, "agreements": agreements})
+
+@app.get("/admin/traffic_summary")
+@require_admin
+def admin_traffic_summary():
+    """
+    쿼리:
+      granularity=day|week|month (기본: day)
+      start=YYYY-MM-DD ISO(UTC)  예: 2025-10-01
+      end=YYYY-MM-DD   (포함)
+    반환:
+      { "series":[ { "bucket":"2025-10-21", "visits":n, "logins":m, "active_users":k }, ... ],
+        "totals": { "visits":X, "logins":Y, "unique_users":Z } }
+    """
+    gran = (request.args.get("granularity") or "day").lower()
+    start = (request.args.get("start") or "").strip()
+    end   = (request.args.get("end") or "").strip()
+
+    # 기본 기간: 최근 30일
+    today = datetime.utcnow().date()
+    if not start:
+        start_date = today - timedelta(days=29)
+    else:
+        start_date = datetime.fromisoformat(start).date()
+    if not end:
+        end_date = today
+    else:
+        end_date = datetime.fromisoformat(end).date()
+
+    # SQLite strftime 패턴
+    if gran == "month":
+        fmt = "%Y-%m"
+    elif gran == "week":
+        # ISO week-year-weeknum
+        fmt = "%Y-W%W"
+    else:
+        fmt = "%Y-%m-%d"
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+
+    # visits: visit_logs 기준
+    cur.execute(f"""
+      SELECT strftime('{fmt}', created_at), COUNT(*)
+      FROM visit_logs
+      WHERE date(created_at) BETWEEN date(?) AND date(?)
+      GROUP BY 1
+      ORDER BY 1
+    """, (start_date.isoformat(), end_date.isoformat()))
+    visit_rows = dict(cur.fetchall() or [])
+
+    # logins: usage_logs(action='login')
+    cur.execute(f"""
+      SELECT strftime('{fmt}', created_at), COUNT(*)
+      FROM usage_logs
+      WHERE action='login'
+        AND date(created_at) BETWEEN date(?) AND date(?)
+      GROUP BY 1
+      ORDER BY 1
+    """, (start_date.isoformat(), end_date.isoformat()))
+    login_rows = dict(cur.fetchall() or [])
+
+    # active users(해당 기간 내 로그인했던 유니크)
+    cur.execute("""
+      SELECT username
+      FROM usage_logs
+      WHERE action='login'
+        AND date(created_at) BETWEEN date(?) AND date(?)
+    """, (start_date.isoformat(), end_date.isoformat()))
+    uniq = set([r[0] for r in (cur.fetchall() or []) if r and r[0]])
+
+    # 버킷 생성
+    series = []
+    cur_d = start_date
+    while cur_d <= end_date:
+        if fmt == "%Y-%m":
+            bucket = cur_d.strftime("%Y-%m")
+            # 월 말까지 점프
+            next_d = (cur_d.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+            cur_d = (cur_d.replace(day=1) + timedelta(days=32)).replace(day=1)
+        elif fmt == "%Y-W%W":
+            bucket = cur_d.strftime("%Y-W%W")
+            next_d = cur_d + timedelta(days=6)
+            cur_d = cur_d + timedelta(days=7)
+        else:
+            bucket = cur_d.strftime("%Y-%m-%d")
+            next_d = cur_d
+            cur_d = cur_d + timedelta(days=1)
+
+        series.append({
+            "bucket": bucket,
+            "visits": int(visit_rows.get(bucket, 0) or 0),
+            "logins": int(login_rows.get(bucket, 0) or 0),
+            "active_users": len(uniq) if fmt != "%Y-%m-%d" else None  # 일별 active_users는 보통 별도 산출
+        })
+
+    totals = {
+        "visits": sum(v["visits"] for v in series),
+        "logins": sum(v["logins"] for v in series),
+        "unique_users": len(uniq),
+    }
+    conn.close()
+    return jsonify({"series": series, "totals": totals})
 
 
 @app.route("/admin/set_days_from_now", methods=["POST"])
