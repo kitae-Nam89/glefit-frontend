@@ -456,6 +456,46 @@ function clampUploadList(list = []) {
    }
  }
 
+// === [ADD] TXT 인코딩 자동 판별 디코더 ===
+async function decodeTxtBest(arrayBuffer) {
+  // 브라우저 TextDecoder로 시도할 후보 (우선순위)
+  const candidates = [
+    { label: "utf-8", bomAware: true },
+    { label: "utf-16le" },
+    { label: "utf-16be" },
+    { label: "euc-kr" }, // 대부분의 CP949 문서를 커버
+  ];
+
+  const bytes = new Uint8Array(arrayBuffer);
+
+  // 간단한 품질 스코어러:  (U+FFFD) 비율↓, 한글(가-힣) 비율↑ 가 좋은 해석
+  const scoreText = (s) => {
+    if (!s) return -1;
+    const total = s.length || 1;
+    const bad = (s.match(/\uFFFD/g) || []).length;          // 치환문자
+    const hangul = (s.match(/[가-힣]/g) || []).length;       // 한글자수
+    const asciiCtrl = (s.match(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g) || []).length;
+    // 가중치: 깨짐패널티, 제어문자 패널티, 한글 가점
+    return (hangul * 3) - (bad * 10) - (asciiCtrl * 2);
+  };
+
+  let best = { enc: "utf-8", text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), score: -1 };
+
+  for (const c of candidates) {
+    try {
+      // BOM 자동 무시는 utf-8-sig와 동일 효과
+      const dec = new TextDecoder(c.label, { fatal: false });
+      const text = dec.decode(bytes);
+      const sc = scoreText(text);
+      if (sc > best.score) best = { enc: c.label, text, score: sc };
+    } catch (_) {
+      // 해당 인코딩 미지원/실패 시 패스
+    }
+  }
+  return best.text || "";
+}
+
+
   const [text, setText] = useState("");
   const [highlightedHTML, setHighlightedHTML] = useState(""); // 중앙 하이라이트 전용(합본)
   const [results, setResults] = useState([]); // 현재 표시 중인 파일의 개별 결과
@@ -539,20 +579,24 @@ const termStats = useMemo(
 );
 
 // ========= 파일 추출/적재 =========
+//⬇️ 이 함수 전체를 교체
 const extractFileText = async (file) => {
-  const lower = file.name.toLowerCase();
+  const lower = (file.name || "").toLowerCase();
+
+  // 1) TXT: ArrayBuffer로 읽은 뒤 최적 인코딩으로 디코딩
   if (lower.endsWith(".txt")) {
-    const reader = new FileReader();
-    return await new Promise((resolve) => {
-      reader.onload = (e) => resolve(e.target.result || "");
-      reader.readAsText(file, "UTF-8");
-    });
+    const buf = await file.arrayBuffer();
+    return await decodeTxtBest(buf);
   }
+
+  // 2) DOCX: 기존대로 mammoth 사용 (한글 호환 우수)
   if (lower.endsWith(".docx")) {
     const arrayBuffer = await file.arrayBuffer();
     const { value } = await mammoth.extractRawText({ arrayBuffer });
     return value || "";
   }
+
+  // 3) 기타 포맷은 빈 문자열
   return "";
 };
 
@@ -1190,7 +1234,8 @@ function moveCursorAccurate(start, end, before, after, original = "") {
 // ========= 저장 =========
 const saveAsTxt = () => {
   const baseName = parsedKeywords[0] || "수정된_원고";
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const BOM = "\uFEFF"; // UTF-8 BOM for Notepad compatibility
+  const blob = new Blob([BOM + (text || "")], { type: "text/plain;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = `${baseName}.txt`;
