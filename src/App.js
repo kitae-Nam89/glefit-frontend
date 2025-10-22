@@ -98,7 +98,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
-      <Footer />
+      {/* 전역 푸터 제거: 로그인 카드 하단에만 노출 */}
     </>
   );
 }
