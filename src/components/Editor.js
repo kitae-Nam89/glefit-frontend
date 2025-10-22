@@ -542,6 +542,55 @@ async function decodeTxtBest(arrayBuffer) {
 
   const textareaRef = useRef(null);
 
+// === [ADD] 워커 풀(Worker Pool) 뼈대: 큐 + 분배 ===
+const WORKER_URL = "/workers/readerWorker.js";
+// 코어 수 기반 기본값: 동시에 과하게 돌지 않도록 2~4개 범위
+const POOL_SIZE = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+
+const __workers = [];
+const __busy = [];
+let __jobSeq = 1;
+const __callbacks = new Map();
+const __queue = [];
+
+function initWorkers() {
+  if (__workers.length) return;
+  for (let i = 0; i < POOL_SIZE; i++) {
+    const w = new Worker(WORKER_URL);
+    w.onmessage = (ev) => {
+      const { id, ok, data, error } = ev.data || {};
+      const cb = __callbacks.get(id);
+      if (cb) {
+        __callbacks.delete(id);
+        try { cb(ok, data, error); } catch (_) {}
+      }
+      __busy[i] = false;
+      flushQueue();
+    };
+    __workers.push(w);
+    __busy.push(false);
+  }
+}
+
+function postJob(kind, payload) {
+  return new Promise((resolve) => {
+    const id = __jobSeq++;
+    __queue.push({ id, kind, payload, resolve });
+    flushQueue();
+  });
+}
+
+function flushQueue() {
+  for (let i = 0; i < __workers.length; i++) {
+    if (__busy[i]) continue;
+    const job = __queue.shift();
+    if (!job) return;
+    __busy[i] = true;
+    __callbacks.set(job.id, (ok, data, error) => job.resolve({ ok, data, error }));
+    __workers[i].postMessage({ id: job.id, kind: job.kind, payload: job.payload });
+  }
+}
+
   // ========= 로컬 스토리지 =========
   useEffect(() => {
     localStorage.setItem("glfit_keywords", keywordInput || "");
