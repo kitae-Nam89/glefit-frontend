@@ -43,21 +43,45 @@ function LoginWithBackdrop() {
   );
 }
 
+// ▷ 전역 푸터 (약관/개인정보 링크)
+function Footer() {
+  return (
+    <footer
+      style={{
+        marginTop: 24,
+        padding: "12px 0",
+        borderTop: "1px solid #eee",
+        fontSize: 14,
+        textAlign: "center",
+      }}
+    >
+      <a href="/terms.html" target="_blank" rel="noopener noreferrer">
+        이용약관
+      </a>
+      {" | "}
+      <a href="/privacy.html" target="_blank" rel="noopener noreferrer">
+        개인정보 처리방침
+      </a>
+    </footer>
+  );
+}
+
 export default function App() {
   const loggedIn = hasToken();
 
   return (
-    <BrowserRouter>
-      <Routes>
-        {/* 홈: 로그인 여부에 따라 분기 */}
-        <Route path="/" element={loggedIn ? <Editor /> : <LoginWithBackdrop />} />
-
-        {/* 관리자 페이지 (상단 공지 포함) */}
-        <Route path="/admin" element={<AdminPage />} />
-
-        {/* 알 수 없는 경로 -> 홈으로 */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <>
+      <BrowserRouter>
+        <Routes>
+          {/* 홈: 로그인 여부에 따라 분기 */}
+          <Route path="/" element={loggedIn ? <Editor /> : <LoginWithBackdrop />} />
+          {/* 관리자 페이지 (상단 공지 포함) */}
+          <Route path="/admin" element={<AdminPage />} />
+          {/* 알 수 없는 경로 -> 홈으로 */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+      <Footer />
+    </>
   );
 }
