@@ -38,6 +38,23 @@ function LoginWithBackdrop() {
       {/* 전경: 로그인 카드 (기존 Editor가 로그인 UI 포함) */}
       <div style={{ position: "relative", zIndex: 1 }}>
         <Editor />
+
+        {/* ← 로그인 카드 하단에 정책 링크 고정 노출 */}
+        <div style={{
+          textAlign: "center",
+          marginTop: 12,
+          padding: "8px 0",
+          fontSize: 13,
+          color: "#6b7280"  /* slate-500 */
+        }}>
+          <a href="/terms.html" target="_blank" rel="noopener noreferrer" style={{ textDecoration: "underline" }}>
+            이용약관
+          </a>
+          {" · "}
+          <a href="/privacy.html" target="_blank" rel="noopener noreferrer" style={{ textDecoration: "underline" }}>
+            개인정보 처리방침
+          </a>
+        </div>
       </div>
     </div>
   );
