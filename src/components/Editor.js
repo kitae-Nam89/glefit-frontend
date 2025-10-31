@@ -3265,11 +3265,11 @@ if (!token && !guestMode) {
     <button
       type="button"
       onClick={async () => {
-        if (!confirm("정말 전체 삭제(숨김 처리) 하시겠습니까?")) return;
+        if (!window.confirm("정말 전체 삭제(숨김 처리) 하시겠습니까?")) return;
         try {
           const { data } = await axios.post(`${API_BASE}/board/admin/delete_all`, {}, { headers: authHeaders() });
           if (data?.ok) {
-            setBoardPosts([]); // 즉시 UI 비우기
+            setBoardPosts([]);
           } else {
             alert("전체 삭제 실패");
           }
@@ -3277,6 +3277,7 @@ if (!token && !guestMode) {
           alert("전체 삭제 실패(권한 또는 네트워크)");
         }
       }}
+
       style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff" }}
     >
       전체 삭제

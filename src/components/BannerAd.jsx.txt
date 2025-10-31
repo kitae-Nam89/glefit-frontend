@@ -1,0 +1,84 @@
+// src/components/BannerAd.jsx
+import React, { useMemo, useState, useEffect } from "react";
+
+export default function BannerAd({
+  position = "left",           // 'left' | 'right'
+  items = [],                  // [{img, href, alt, width, height, id}]
+  rotateMs = 8000,             // 회전 주기
+  maxWidth = 300,              // 160x600, 300x600 권장
+  stickyTop = 80,              // 상단 고정 오프셋
+  onClickAd,                   // (ad) => {}
+}) {
+  const [closed, setClosed] = useState(false);
+  const [idx, setIdx] = useState(0);
+
+  const pool = useMemo(() => items.filter(Boolean), [items]);
+  const current = pool.length ? pool[idx % pool.length] : null;
+
+  useEffect(() => {
+    if (!pool.length) return;
+    const t = setInterval(() => setIdx((i) => i + 1), rotateMs);
+    return () => clearInterval(t);
+  }, [pool.length, rotateMs]);
+
+  if (closed || !current) return null;
+
+  return (
+    <aside
+      style={{
+        position: "sticky",
+        top: stickyTop,
+        width: maxWidth,
+        maxWidth,
+        display: "none",       // 모바일에서는 숨김
+      }}
+      className="login-side-banner"
+    >
+      <div style={{
+        position: "relative",
+        border: "1px solid #e5e7eb",
+        borderRadius: 8,
+        overflow: "hidden",
+        background: "#fff",
+        boxShadow: "0 2px 8px rgba(0,0,0,.06)"
+      }}>
+        <button
+          onClick={() => setClosed(true)}
+          aria-label="배너 닫기"
+          title="닫기"
+          style={{
+            position: "absolute", top: 6, right: 6,
+            width: 28, height: 28, borderRadius: 14,
+            border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer"
+          }}
+        >×</button>
+
+        <a
+          href={current.href}
+          target="_blank" rel="noopener noreferrer"
+          onClick={() => onClickAd && onClickAd(current)}
+          style={{ display: "block" }}
+        >
+          <img
+            src={current.img}
+            alt={current.alt || "광고"}
+            width={current.width || maxWidth}
+            height={current.height || 600}
+            loading="lazy"
+            style={{ display: "block", width: "100%", height: "auto" }}
+          />
+        </a>
+      </div>
+      <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 6, textAlign: "center" }}>
+        광고
+      </div>
+
+      <style>{`
+        /* ≥ 1200px에서만 표시 (프로젝트 폭에 맞게 조정) */
+        @media (min-width: 1200px) {
+          .login-side-banner { display: block; }
+        }
+      `}</style>
+    </aside>
+  );
+}
