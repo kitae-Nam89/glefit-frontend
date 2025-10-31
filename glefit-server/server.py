@@ -112,8 +112,16 @@ def migrate_users_table():
     try: cur.execute("ALTER TABLE users ADD COLUMN created_at TEXT")
     except Exception: pass
 
+    # ★ 신규: 게시글 작성 정지 플래그
+    try: cur.execute("ALTER TABLE users ADD COLUMN posting_blocked INTEGER DEFAULT 0")
+    except Exception: pass
+    # (선택) 인덱스
+    try: cur.execute("CREATE INDEX IF NOT EXISTS idx_users_posting_blocked ON users(posting_blocked)")
+    except Exception: pass
+
     conn.commit()
     conn.close()
+
 
 # === (BOOT SEED) 서버 기동 시 관리자 계정 보장 ===
 def _boot_seed_admin():
@@ -201,8 +209,53 @@ def migrate_ops_tables():
         created_at TEXT
     )""")
 
+    # --- [ADD] board posts & limits ---
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS board_posts (
+        id TEXT PRIMARY KEY,
+        username TEXT,
+        text TEXT,
+        pinned INTEGER DEFAULT 0,
+        ts INTEGER
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS board_limits (
+        username TEXT PRIMARY KEY,
+        daily_limit INTEGER DEFAULT 2
+    )
+    """)
+
+
     conn.commit()
     conn.close()
+
+# === INSERT near line ~217 (after migrate_ops_tables, before "마이그레이션 실행") ===
+def migrate_board_tables():
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS board_posts (
+        id TEXT PRIMARY KEY,
+        username TEXT,
+        text TEXT,
+        pinned INTEGER DEFAULT 0,
+        ts INTEGER
+    )""")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS board_limits (
+        username TEXT PRIMARY KEY,
+        daily_limit INTEGER DEFAULT 2
+    )""")
+
+    # --- NEW: hidden 컬럼(소프트 삭제/숨김) 보강 ---
+    cur.execute("PRAGMA table_info(board_posts)")
+    cols = [r[1] for r in cur.fetchall()]
+    if "hidden" not in cols:
+        cur.execute("ALTER TABLE board_posts ADD COLUMN hidden INTEGER DEFAULT 0")
+
+    conn.commit(); conn.close()
+
+
 
 def log_visit(username, path):
     try:
@@ -220,6 +273,7 @@ def log_visit(username, path):
 # 마이그레이션 실행
 migrate_users_table()
 migrate_ops_tables()
+migrate_board_tables()
 _boot_seed_admin()
 
 # [ADD] user helpers & guards
@@ -237,6 +291,55 @@ def _get_user(username: str):
         "paid_until": row[4],
         "role": row[5] or "user",
     }
+
+# === [ADD] Non-admin text size limit ===============================
+MAX_TEXT_BYTES_NON_ADMIN = 100 * 1024  # 100KB
+
+def _utf8_len(s: str) -> int:
+    if not s:
+        return 0
+    return len(s.encode("utf-8", "ignore"))
+
+def _is_admin_current() -> bool:
+    try:
+        uname = _username_from_req()
+        u = _get_user(uname) if uname else None
+        return (u or {}).get("role") == "admin"
+    except Exception:
+        return False
+
+def enforce_size_limit_or_400(texts_or_iterable):
+    """
+    - 관리자면 무제한 통과
+    - 비관리자(일반/체험판)는 '항목당' 100KB 초과 시 400 반환
+    - texts_or_iterable: str | list[str] | list[{'text':str}, ...]
+    """
+    if _is_admin_current():
+        return  # admin unlimited
+
+    # normalize
+    if isinstance(texts_or_iterable, str):
+        payloads = [texts_or_iterable]
+    else:
+        payloads = []
+        for item in (texts_or_iterable or []):
+            if isinstance(item, str):
+                payloads.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                payloads.append(item.get("text") or "")
+            else:
+                payloads.append(str(item or ""))
+
+    for idx, s in enumerate(payloads):
+        if _utf8_len(s) > MAX_TEXT_BYTES_NON_ADMIN:
+            return jsonify({
+                "ok": False,
+                "error": "TEXT_TOO_LARGE",
+                "message": f"일반/체험판은 항목당 100KB(102400 bytes)까지만 허용됩니다. (#{idx+1})",
+                "limit_bytes": MAX_TEXT_BYTES_NON_ADMIN
+            }), 400
+    return
+# ===================================================================
 
 def _remaining_days(paid_until: str) -> int:
     if not paid_until:
@@ -410,6 +513,27 @@ def require_admin(fn):
 RULE_PATH = os.getenv("RULE_PATH", "kr-medhealth.yaml")
 RULES = {}   # {"rules":[{...}], ...}
 RULES_INDEX = {}  # {rule_id: rule_obj}
+
+# === INSERT @ line 467 (right after require_admin ends) ===
+def verify_board_auth(payload):
+    """
+    payload: {"username": "...", "password": "..."}
+    - users 테이블의 자격 확인
+    - 반환: (ok, username, is_admin)
+    """
+    try:
+        u = (payload.get("username") or "").strip()
+        p = payload.get("password") or ""
+        user = _get_user(u)
+        if not user or not bcrypt.verify(p, user["password_hash"]):
+            return False, "", False
+        # 결제/활성 유효
+        if not _is_paid_and_active(user):
+            return False, "", False
+        is_admin = (user.get("role") == "admin")
+        return True, user["username"], is_admin
+    except Exception:
+        return False, "", False
 
 # ================== 유틸 ==================
 
@@ -1274,6 +1398,188 @@ def admin_list_users():
         })
     return jsonify({"users": out})
 
+# === [ADD] 부분일치 사용자 검색 (게시글이 없어도 검색) ===
+@app.get("/admin/board_user_search")
+@require_admin
+def admin_board_user_search():
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"ok": True, "items": []})
+
+    # LIKE 안전 이스케이프
+    esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{esc}%"
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        WITH users_union AS (
+          SELECT DISTINCT username FROM users
+          UNION
+          SELECT DISTINCT username FROM board_posts
+        )
+        SELECT uu.username,
+               COALESCE((SELECT daily_limit
+                         FROM board_limits bl
+                         WHERE bl.username = uu.username), 2) AS daily_limit
+        FROM users_union uu
+        WHERE uu.username LIKE ? ESCAPE '\\'
+        ORDER BY uu.username
+        LIMIT 50
+    """, (like,))
+    rows = cur.fetchall()
+    conn.close()
+
+    items = [{"username": r[0], "blocked": (int(r[1] or 2) <= 0), "daily_limit": int(r[1] or 2)} for r in rows]
+    return jsonify({"ok": True, "items": items})
+
+# ===== 관리자: 한 줄 홍보 게시판 =====
+@app.get("/admin/board_list")
+@require_admin
+def admin_board_list():
+    args = request.args
+    username = (args.get("username") or "").strip()
+    keyword  = (args.get("q") or "").strip()
+    pinned_only = args.get("pinned_only") in ("1","true","True")
+    include_hidden = args.get("include_hidden") in ("1","true","True")
+
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    where = []
+    params = []
+
+    if username:
+        where.append("p.username = ?")
+        params.append(username)
+    if keyword:
+        where.append("p.text LIKE ?")
+        params.append(f"%{keyword}%")
+    if not include_hidden:
+        where.append("p.hidden = 0")
+    if pinned_only:
+        where.append("p.pinned = 1")
+
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = f"""
+    SELECT p.id, p.username, p.text, p.pinned, p.ts, p.hidden,
+           COALESCE(u.posting_blocked,0) AS user_blocked
+      FROM board_posts p
+      LEFT JOIN users u ON u.username = p.username
+      {where_sql}
+      ORDER BY p.pinned DESC, p.ts DESC
+    """
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    def to_iso(ts):
+        try:
+            return datetime.utcfromtimestamp(int(ts)).isoformat()+"Z"
+        except Exception:
+            return None
+
+    posts = []
+    for r in rows:
+        posts.append({
+            "id": r["id"],
+            "username": r["username"],
+            "content": r["text"],
+            "pinned": bool(r["pinned"]),
+            "created_at": to_iso(r["ts"]),
+            "user_blocked": bool(r["user_blocked"]),
+            "hidden": int(r["hidden"] or 0),
+        })
+    return jsonify({"posts": posts})
+
+@app.post("/admin/board_update")
+@require_admin
+def admin_board_update():
+    body = request.get_json(force=True, silent=True) or {}
+    pid = (body.get("id") or "").strip()
+    content = (body.get("content") or "").strip()
+    if not pid: return jsonify({"error":"id required"}), 400
+    if not content: return jsonify({"error":"content required"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("UPDATE board_posts SET text=? WHERE id=?", (content, pid))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@app.post("/admin/board_delete")
+@require_admin
+def admin_board_delete():
+    body = request.get_json(force=True, silent=True) or {}
+    pid = (body.get("id") or "").strip()
+    if not pid: return jsonify({"error":"id required"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    # 소프트 삭제: hidden=1
+    cur.execute("UPDATE board_posts SET hidden=1 WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@app.post("/admin/board_pin")
+@require_admin
+def admin_board_pin():
+    body = request.get_json(force=True, silent=True) or {}
+    pid = (body.get("id") or "").strip()
+    pinned = 1 if body.get("pinned") in (True, "1", "true", "True") else 0
+    if not pid: return jsonify({"error":"id required"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("UPDATE board_posts SET pinned=? WHERE id=?", (pinned, pid))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@app.post("/admin/board_block_user")
+@require_admin
+def admin_board_block_user():
+    body = request.get_json(force=True, silent=True) or {}
+    username = (body.get("username") or "").strip()
+    blocked = 1 if body.get("blocked") in (True, "1", "true", "True") else 0
+    if not username: return jsonify({"error":"username required"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("UPDATE users SET posting_blocked=? WHERE username=?", (blocked, username))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/board/create", methods=["POST"])
+@require_user
+def create_board_post():
+    # 현재 파일에는 g.user를 세팅하지 않으므로 토큰에서 추출
+    username = _username_from_req()
+    if not username:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+
+    # 작성정지 여부 확인
+    r = cur.execute(
+        "SELECT IFNULL(posting_blocked,0) FROM users WHERE username=?",
+        (username,)
+    ).fetchone()
+    if r and int(r[0]) == 1:
+        conn.close()
+        return jsonify({"error": "작성정지 사용자입니다"}), 403
+
+    payload = request.get_json(force=True, silent=True) or {}
+    content = (payload.get("content") or "").strip()   # ← .trim() → .strip()
+    if not content:
+        conn.close()
+        return jsonify({"error": "내용이 비어 있습니다"}), 400
+
+    # board_posts 스키마: (id, username, text, pinned, hidden, ts)
+    cur.execute(
+        "INSERT INTO board_posts (id, username, text, pinned, hidden, ts) "
+        "VALUES (?, ?, ?, 0, 0, strftime('%s','now'))",
+        (str(uuid.uuid4()), username, content)
+    )
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+
+
 # 로컬 맞춤법 초기화
 _init_symspell()
 
@@ -1288,6 +1594,11 @@ def verify():
         text = (data.get("text") or "").strip()
         if not text:
             return jsonify({"error": "No text provided", "results": []}), 400
+
+        # [ADD] non-admin size guard (항목당 100KB)
+        limit_resp = enforce_size_limit_or_400(text)
+        if limit_resp:
+            return limit_resp
 
         all_items = []
 
@@ -1384,10 +1695,16 @@ def spell_local():
     try:
         data = request.get_json(force=True, silent=True) or {}
         text = (data.get("text") or "")
+
+        # [ADD] non-admin size guard (항목당 100KB)
+        limit_resp = enforce_size_limit_or_400(text)
+        if limit_resp:
+            return limit_resp
+
         if not text.strip() or _sym is None:
             return jsonify({"results": []})
 
-        min_len = int(data.get("min_len") or 3)   # 짧은 토큰 제외(오탐↓)
+        min_len = int(data.get("min_len") or 3)   # 짧은 토큰 제외(오탑↓)
         max_sug = int(data.get("max_sug") or 3)   # 제안 상위 N개
 
         results = []
@@ -1396,6 +1713,10 @@ def spell_local():
                 continue
             # 화이트리스트/사전에 있으면 통과
             if tok in _whitelist or _sym.words.get(tok, 0) > 0:
+                continue
+
+            suggs = _sym.lookup(tok, Verbosity.TOP, max_edit_distance=2, include_unknown=False)
+            if not suggs:
                 continue
 
             suggs = _sym.lookup(tok, Verbosity.TOP, max_edit_distance=2, include_unknown=False)
@@ -1522,15 +1843,22 @@ def dedup_intra():
         text = (data.get("text") or "")
         if not text.strip():
             return jsonify({"error": "No text provided"}), 400
+
+        # [ADD] non-admin size guard (항목당 100KB)
+        limit_resp = enforce_size_limit_or_400(text)
+        if limit_resp:
+            return limit_resp
+
         min_len = int(data.get("min_len", 6))
         sim_th  = float(data.get("sim_threshold", 0.85))
         exact, sims = _dedup_intra(text, min_len=min_len, sim_threshold=sim_th)
         return jsonify({"exact_groups": exact, "similar_pairs": sims})
     except Exception as e:
         import traceback
-        print("❌ /dedup_intra 오류:", e)
+        print("✘ /dedup_intra 오류:", e)
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/dedup_inter", methods=["POST"])
 @require_user
@@ -1544,17 +1872,36 @@ def dedup_inter():
         files = data.get("files") or []
         if not files:
             return jsonify({"error": "No files provided"}), 400
+
+        # [ADD] non-admin size guard (각 항목 text 100KB)
+        limit_resp = enforce_size_limit_or_400(files)
+        if limit_resp:
+            return limit_resp
+
         min_len = int(data.get("min_len", 6))
         sim_th  = float(data.get("sim_threshold", 0.85))
+
         exact, sims = _dedup_inter(files, min_len=min_len, sim_threshold=sim_th)
-        log_usage(_username_from_req(), "dedup_inter", len(files))
+
+        # (선택) 사용량 로깅: 헬퍼가 있으면 유지, 없으면 무시
+        try:
+            log_usage(_username_from_req(), "dedup_inter", len(files))
+        except Exception:
+            pass
+
         return jsonify({"exact_groups": exact, "similar_pairs": sims})
+
     except Exception as e:
         import traceback
-        print("❌ /dedup_inter 오류:", e)
+        print("✘ /dedup_inter 오류:", e)
         traceback.print_exc()
-        log_error(_username_from_req(), "/dedup_inter", 500, str(e))
+        # (선택) 에러 로깅
+        try:
+            log_error(_username_from_req(), "/dedup_inter", 500, str(e))
+        except Exception:
+            pass
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/policy_verify", methods=["POST", "OPTIONS"])
 @require_user
@@ -1566,7 +1913,12 @@ def policy_verify():
         data = request.get_json(force=True, silent=True) or {}
         text = (data.get("text") or "").strip()
         if not text:
-            return jsonify({"error": "No text provided", "results": []}), 400
+            return jsonify({"error": "No text provided"}), 400
+
+        # [ADD] non-admin size guard (항목당 100KB)
+        limit_resp = enforce_size_limit_or_400(text)
+        if limit_resp:
+            return limit_resp
 
         # 심의 규칙 검사
         items = rule_scan(text)
@@ -1575,14 +1927,26 @@ def policy_verify():
         # 출처 태그
         for it in items:
             it["source"] = "policy"
-        log_usage(_username_from_req(), "policy", 1)
+
+        # (선택) 사용량 로깅
+        try:
+            log_usage(_username_from_req(), "policy", 1)
+        except Exception:
+            pass
+
         return jsonify({"results": items})
+
     except Exception as e:
         import traceback
-        print("❌ /policy_verify 오류:", e)
+        print("✘ /policy_verify 오류:", e)
         traceback.print_exc()
-        log_error(_username_from_req(), "/policy_verify", 500, str(e))
+        # (선택) 에러 로깅
+        try:
+            log_error(_username_from_req(), "/policy_verify", 500, str(e))
+        except Exception:
+            pass
         return jsonify({"error": str(e), "results": []}), 500
+
 
 @app.after_request
 def _after(resp):
@@ -1607,6 +1971,8 @@ def _on_error(e):
         return e  # ★ 반드시 return e !!!
     # 그 외 진짜 에러만 500 처리
     return jsonify({"error": "internal"}), 500
+
+
 
 # === 4) 관리자: 기간 조정 API ===
 # 위치: (① /admin/approve 아래) 또는 (② if __name__ == "__main__": 바로 위)
@@ -1825,6 +2191,349 @@ def admin_set_days_from_now():
     )
     conn.commit(); conn.close()
     return jsonify({"ok": True, "paid_until": new_until.isoformat()})
+
+# === [ADD] BOARD API (list/add/edit/delete/pin/admin_delete_all) ===
+from flask import Flask
+
+def _default_daily_limit(username):
+    # board_limits 테이블에서 per-user limit을 읽고, 없으면 2 리턴
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT daily_limit FROM board_limits WHERE username=?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    return int(row[0]) if row and row[0] is not None else 2
+
+def _count_today_posts(username):
+    day_start = int(datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+    day_end   = int(datetime.utcnow().replace(hour=23, minute=59, second=59, microsecond=999000).timestamp() * 1000)
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*) FROM board_posts
+        WHERE username=? AND ts BETWEEN ? AND ? AND (hidden IS NULL OR hidden=0)
+    """, (username, day_start, day_end))
+    n = cur.fetchone()[0]
+    conn.close()
+    return int(n or 0)
+
+# === INSERT BLOCK between line 1935 and 1936 ===
+from uuid import uuid4
+
+DEFAULT_DAILY = 2
+
+def _board_daily_limit(username):
+    try:
+        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        cur.execute("SELECT daily_limit FROM board_limits WHERE username=?", (username,))
+        row = cur.fetchone(); conn.close()
+        if row and row[0] is not None:
+            return int(row[0]) or DEFAULT_DAILY
+    except Exception:
+        pass
+    return DEFAULT_DAILY
+
+def _count_posts_today(username):
+    try:
+        start = int(datetime.utcnow().replace(hour=0,minute=0,second=0,microsecond=0).timestamp()*1000)
+        end   = int(datetime.utcnow().replace(hour=23,minute=59,second=59,microsecond=999999).timestamp()*1000)
+        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        cur.execute("SELECT COUNT(1) FROM board_posts WHERE username=? AND ts BETWEEN ? AND ?",
+                    (username, start, end))
+        c = cur.fetchone()[0]; conn.close()
+        return int(c or 0)
+    except Exception:
+        return 0
+
+@app.get("/board/posts")
+def board_posts_list():
+    """읽기 전용: 최근 100건, pinned 우선"""
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        SELECT id, username, text, pinned, ts
+        FROM board_posts
+        ORDER BY pinned DESC, ts DESC
+        LIMIT 100
+    """)
+    rows = cur.fetchall(); conn.close()
+    posts = [{"id":r[0], "user":r[1], "text":r[2], "pinned":bool(r[3]), "ts":int(r[4])} for r in rows]
+    return jsonify({"posts": posts})
+
+@app.post("/board/posts")
+def board_posts_add():
+    """작성: username/password 인증 + 일일 제한"""
+    payload = request.get_json(force=True, silent=True) or {}
+    ok, uname, is_admin = verify_board_auth(payload)
+    if not ok:
+        return jsonify({"error":"auth"}), 401
+
+    text = (payload.get("text") or "").strip()
+    if not text or len(text) > 60:
+        return jsonify({"error":"length"}), 400
+
+    # 일일 제한(관리자는 무제한)
+    if not is_admin:
+        used = _count_posts_today(uname)
+        if used >= _board_daily_limit(uname):
+            return jsonify({"error":"limit"}), 429
+
+    pid = "p_" + uuid4().hex[:10]
+    now = int(time.time()*1000)
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("INSERT INTO board_posts (id, username, text, pinned, ts) VALUES (?,?,?,?,?)",
+                (pid, uname, text, 0, now))
+    conn.commit(); conn.close()
+    return jsonify({"ok":True, "id":pid, "ts":now})
+
+@app.put("/board/posts/<pid>")
+def board_posts_edit(pid):
+    payload = request.get_json(force=True, silent=True) or {}
+    ok, uname, is_admin = verify_board_auth(payload)
+    if not ok:
+        return jsonify({"error":"auth"}), 401
+    text = (payload.get("text") or "").strip()
+    if not text or len(text) > 60:
+        return jsonify({"error":"length"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT username FROM board_posts WHERE id=?", (pid,))
+    row = cur.fetchone()
+    if not row:
+        conn.close(); return jsonify({"error":"not_found"}), 404
+    if (row[0] != uname) and (not is_admin):
+        conn.close(); return jsonify({"error":"forbidden"}), 403
+
+    cur.execute("UPDATE board_posts SET text=? WHERE id=?", (text, pid))
+    conn.commit(); conn.close()
+    return jsonify({"ok":True})
+
+@app.delete("/board/posts/<pid>")
+def board_posts_delete(pid):
+    payload = request.get_json(force=True, silent=True) or {}
+    ok, uname, is_admin = verify_board_auth(payload)
+    if not ok:
+        return jsonify({"error":"auth"}), 401
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT username FROM board_posts WHERE id=?", (pid,))
+    row = cur.fetchone()
+    if not row:
+        conn.close(); return jsonify({"error":"not_found"}), 404
+    if (row[0] != uname) and (not is_admin):
+        conn.close(); return jsonify({"error":"forbidden"}), 403
+
+    cur.execute("DELETE FROM board_posts WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok":True})
+
+@app.post("/board/pin/<pid>")
+def board_posts_pin(pid):
+    payload = request.get_json(force=True, silent=True) or {}
+    ok, uname, is_admin = verify_board_auth(payload)
+    if not ok or not is_admin:
+        return jsonify({"error":"admin_only"}), 403
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT pinned FROM board_posts WHERE id=?", (pid,))
+    row = cur.fetchone()
+    if not row:
+        conn.close(); return jsonify({"error":"not_found"}), 404
+    new_pin = 0 if row[0] else 1
+    cur.execute("UPDATE board_posts SET pinned=? WHERE id=?", (new_pin, pid))
+    conn.commit(); conn.close()
+    return jsonify({"ok":True, "pinned": bool(new_pin)})
+
+# === [ADD] 게시판 미니로그인 관리자 여부 확인 ===
+@app.post("/board/auth_check")
+def board_auth_check():
+    payload = request.get_json(force=True, silent=True) or {}
+    ok, uname, is_admin = verify_board_auth(payload)
+    if not ok:
+        return jsonify({"ok": False}), 401
+    return jsonify({"ok": True, "username": uname, "is_admin": bool(is_admin)})
+
+@app.post("/admin/board/limit")
+def board_limit_set():
+    """관리자: 특정 ID 일일 작성 제한 변경"""
+    payload = request.get_json(force=True, silent=True) or {}
+    ok, uname, is_admin = verify_board_auth(payload)
+    if not ok or not is_admin:
+        return jsonify({"error":"admin_only"}), 403
+    target = (payload.get("target") or "").strip().lower()
+    n = int(payload.get("limit") or DEFAULT_DAILY)
+    if not target:
+        return jsonify({"error":"target"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO board_limits (username, daily_limit)
+        VALUES (?,?)
+        ON CONFLICT(username) DO UPDATE SET daily_limit=excluded.daily_limit
+    """, (target, n))
+    conn.commit(); conn.close()
+    return jsonify({"ok":True, "username": target, "limit": n})
+
+# === Board APIs ===
+@app.route("/board/list", methods=["GET"])
+def board_list():
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("""
+        SELECT id, username, text, pinned, ts
+        FROM board_posts
+        WHERE (hidden IS NULL OR hidden=0)
+        ORDER BY pinned DESC, ts DESC
+        LIMIT 200
+    """)
+    rows = cur.fetchall(); conn.close()
+    items = [{"id": r[0], "user": r[1], "text": r[2], "pinned": bool(r[3]), "ts": int(r[4] or 0)} for r in rows]
+    return jsonify({"ok": True, "items": items})
+
+@app.route("/board/add", methods=["POST"])
+@require_user
+def board_add():
+    data = (request.get_json(silent=True) or {})
+    text = (data.get("text") or "").strip()
+    if not text: return jsonify({"ok": False, "error":"EMPTY"}), 400
+    if len(text) > 60: return jsonify({"ok": False, "error":"TOO_LONG"}), 400
+
+    uname = _username_from_req()
+    user = _get_user(uname)
+    is_admin = (user or {}).get("role") == "admin"
+
+    # 작성 정지 사용자면 즉시 차단
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    r = cur.execute("SELECT IFNULL(posting_blocked,0) FROM users WHERE username=?", (uname,)).fetchone()
+    if r and int(r[0]) == 1:
+        conn.close()
+        return jsonify({"ok": False, "error": "BLOCKED"}), 403
+    conn.close()
+
+    # === 일일 제한: KST 자정 기준 (삭제글 포함 카운트) ===
+    now_utc = datetime.utcnow()
+    now_kst = now_utc + timedelta(hours=9)
+    kst_midnight = datetime(now_kst.year, now_kst.month, now_kst.day, 0, 0, 0)
+    boundary_utc = kst_midnight - timedelta(hours=9)
+    boundary_ms = int(boundary_utc.timestamp() * 1000)
+
+    # 관리자면 무제한 통과
+    if not is_admin:
+        # per-user 한도: board_limits.daily_limit 사용, 없으면 기본 2회
+        try:
+            daily_limit = _default_daily_limit(uname)  # 함수 정의: server.py에 이미 있음
+        except Exception:
+            daily_limit = 2
+
+        conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM board_posts WHERE username=? AND ts>=?",
+            (uname, boundary_ms)
+        )
+        used = int(cur.fetchone()[0] or 0)
+        conn.close()
+
+        if used >= int(daily_limit):
+            return jsonify({
+                "ok": False,
+                "error": "LIMIT",
+                "used": used,
+                "limit": int(daily_limit),
+                "reset_at_kst": int(kst_midnight.timestamp() * 1000)
+            }), 400
+    # (관리자는 위 제한을 건너뜀)
+
+
+    # === 저장 ===
+    pid = f"p_{int(time.time()*1000)}_{uuid.uuid4().hex[:5]}"
+    ts  = int(time.time()*1000)
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO board_posts (id, username, text, pinned, ts, hidden) VALUES (?,?,?,?,?,0)",
+        (pid, uname, text, 0, ts)
+    )
+    conn.commit(); conn.close()
+
+    return jsonify({
+        "ok": True,
+        "item": {"id": pid, "user": uname, "text": text, "pinned": False, "ts": ts}
+    })
+
+
+@app.route("/board/edit", methods=["POST"])
+@require_user
+def board_edit():
+    data = (request.get_json(silent=True) or {})
+    pid  = data.get("id") or ""
+    text = (data.get("text") or "").strip()
+    if not pid or not text: return jsonify({"ok": False, "error":"BAD_REQ"}), 400
+    if len(text) > 60: return jsonify({"ok": False, "error":"TOO_LONG"}), 400
+
+    uname = _username_from_req()
+    user = _get_user(uname)
+    is_admin = (user or {}).get("role") == "admin"
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT username FROM board_posts WHERE id=? AND (hidden IS NULL OR hidden=0)", (pid,))
+    row = cur.fetchone()
+    if not row: 
+        conn.close(); return jsonify({"ok": False, "error": "NOT_FOUND"}), 404
+
+    if (not is_admin) and (row[0] != uname):
+        conn.close(); return jsonify({"ok": False, "error": "FORBIDDEN"}), 403
+
+    cur.execute("UPDATE board_posts SET text=? WHERE id=?", (text, pid))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/board/delete", methods=["POST"])
+@require_user
+def board_delete():
+    data = (request.get_json(silent=True) or {})
+    pid  = data.get("id") or ""
+    if not pid: return jsonify({"ok": False, "error":"BAD_REQ"}), 400
+
+    uname = _username_from_req()
+    user = _get_user(uname)
+    is_admin = (user or {}).get("role") == "admin"
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT username FROM board_posts WHERE id=? AND (hidden IS NULL OR hidden=0)", (pid,))
+    row = cur.fetchone()
+    if not row: 
+        conn.close(); return jsonify({"ok": False, "error": "NOT_FOUND"}), 404
+
+    if (not is_admin) and (row[0] != uname):
+        conn.close(); return jsonify({"ok": False, "error": "FORBIDDEN"}), 403
+
+    cur.execute("UPDATE board_posts SET hidden=1 WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True})
+
+@app.route("/board/toggle_pin", methods=["POST"])
+@require_admin
+def board_toggle_pin():
+    data = (request.get_json(silent=True) or {})
+    pid  = data.get("id") or ""
+    if not pid: return jsonify({"ok": False, "error":"BAD_REQ"}), 400
+
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("SELECT pinned FROM board_posts WHERE id=? AND (hidden IS NULL OR hidden=0)", (pid,))
+    row = cur.fetchone()
+    if not row:
+        conn.close(); return jsonify({"ok": False, "error":"NOT_FOUND"}), 404
+
+    new_pin = 0 if (row[0] or 0) else 1
+    cur.execute("UPDATE board_posts SET pinned=? WHERE id=?", (new_pin, pid))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "pinned": bool(new_pin)})
+
+@app.route("/board/admin/delete_all", methods=["POST"])
+@require_admin
+def board_admin_delete_all():
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    cur.execute("UPDATE board_posts SET hidden=1 WHERE (hidden IS NULL OR hidden=0)")
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "all_deleted": True})
+
+# === END INSERT BLOCK ===
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
