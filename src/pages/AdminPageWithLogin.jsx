@@ -33,7 +33,7 @@ const CSS = `
 .btn-sm:disabled{opacity:.6;cursor:not-allowed}
 .table thead{background:#f9fafb}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
-.grid{display:grid;grid-template-columns:260px 1fr 360px;gap:18px;margin-top:18px}
+.grid{display:grid;grid-template-columns:260px minmax(0,1fr) 360px;gap:18px;margin-top:18px}
 @media (max-width:1100px){.grid{grid-template-columns:1fr;}}
 .sticky{position:sticky;top:14px}
 .kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
@@ -177,6 +177,80 @@ export default function AdminPage(){
     } finally { setTrafficLoading(false); }
   },[token, gran, range]);
   useEffect(()=>{ if(token) loadTraffic(); },[token, loadTraffic]);
+
+// === [ADD] 게시판 관리 상태 ===
+const [boardLoading, setBoardLoading] = useState(false);
+const [boardRows, setBoardRows] = useState([]);
+const [boardQ, setBoardQ] = useState("");              // 내용 검색
+const [boardUser, setBoardUser] = useState("");        // 작성자 필터
+const [boardPinnedOnly, setBoardPinnedOnly] = useState(false);
+const [boardIncludeHidden, setBoardIncludeHidden] = useState(false);
+
+// === [ADD] 게시판 목록 로더 ===
+const loadBoardList = useCallback(async ()=>{
+  if(!token) return;
+  setBoardLoading(true);
+  try{
+    const params = new URLSearchParams();
+    if (boardQ) params.set("q", boardQ);
+    if (boardUser) params.set("username", boardUser);
+    if (boardPinnedOnly) params.set("pinned_only", "1");
+    if (boardIncludeHidden) params.set("include_hidden", "1");
+    const { data } = await axios.get(`${API_BASE}/admin/board_list?`+params.toString());
+    setBoardRows(data?.posts || []);
+  } finally { setBoardLoading(false); }
+}, [token, boardQ, boardUser, boardPinnedOnly, boardIncludeHidden]);
+useEffect(()=>{ if(token) loadBoardList(); }, [token, loadBoardList]);
+
+// ▼ [ADD] 작성자 부분검색(게시글 없어도 users 테이블에서 검색)
+const [userSearchQ, setUserSearchQ] = useState("");
+const [userSearchRes, setUserSearchRes] = useState([]);
+const searchTimer = useRef(null);
+
+function searchUsersDebounced(q) {
+  if (searchTimer.current) clearTimeout(searchTimer.current);
+  searchTimer.current = setTimeout(async () => {
+    if (!q) { setUserSearchRes([]); return; }
+    try {
+      const { data } = await axios.get(`${API_BASE}/admin/list_users`, {
+        params: { q },                 // ← 한 글자도 부분일치
+        headers: axios.defaults.headers.common, // 이미 setAuthHeader 적용됨
+      });
+      setUserSearchRes(Array.isArray(data?.users) ? data.users : []);
+    } catch {
+      setUserSearchRes([]);
+    }
+  }, 250);
+}
+
+
+// === [ADD] 핀 토글 ===
+async function onTogglePin(p){
+  try{
+    await axios.post(`${API_BASE}/admin/board_pin`, { id: p.id, pinned: !p.pinned });
+    await loadBoardList();
+  }catch(e){ alert(e?.response?.data?.error || "핀 설정 실패"); }
+}
+
+// === [ADD] 게시글 삭제(숨김) ===
+async function onDeletePost(p){
+  if(!window.confirm("삭제(숨김) 처리할까요?")) return;
+  try{
+    await axios.post(`${API_BASE}/admin/board_delete`, { id: p.id });
+    await loadBoardList();
+  }catch(e){ alert(e?.response?.data?.error || "삭제 실패"); }
+}
+
+// === [ADD] 사용자 게시판 작성정지 토글 ===
+async function onToggleUserBlock(username, nextBlocked){
+  try{
+    await axios.post(`${API_BASE}/admin/board_block_user`, { username, blocked: nextBlocked ? 1 : 0 });
+    await loadBoardList();
+    // 사용자 표에도 반영되게 목록 리프레시(선택)
+    if (typeof refreshList === "function") await refreshList();
+  }catch(e){ alert(e?.response?.data?.error || "작성정지 변경 실패"); }
+}
+
 
   /* 활성/비번/삭제 */
   async function onIssue(e){
@@ -353,126 +427,219 @@ export default function AdminPage(){
   </form>
 </div>
 
-        {/* 중: 사용자 목록 (중앙, 크게) */}
-        <div className="card" style={{height:"fit-content"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
-            <h2 className="h2">사용자 목록</h2>
-            <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              <input className="input" placeholder="아이디 검색" value={q} onChange={e=>setQ(e.target.value)} style={{width:220}}/>
-              <button className="btn" onClick={refreshList}>검색</button>
+{/* 중: 사용자 목록 (중앙, 크게) */}
+<div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
+  {/* ───────── 사용자 목록 카드 ───────── */}
+  <div className="card" style={{ height: "fit-content" }}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
+      <h2 className="h2">사용자 목록</h2>
+      <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <input className="input" placeholder="아이디 검색" value={q} onChange={e=>setQ(e.target.value)} style={{width:220}}/>
+        <button className="btn" onClick={refreshList}>검색</button>
+      </div>
+    </div>
+
+    <div ref={usersScrollRef} className="scrollx">
+      <table className="table minw-users">
+        <thead>
+          <tr>
+            <th style={{width:160}}>아이디</th>
+            <th style={{width:66}}>활성</th>
+            <th style={{width:66}}>동시</th>
+            <th style={{width:70}}>남은</th>
+            <th style={{width:120}}>만료일</th>
+            <th style={{width:260}}>메모</th>
+            <th style={{width:220}}>제한 도메인</th>
+            <th style={{width:120}}>생성일</th>
+            <th style={{width:280}}>작업</th>
+          </tr>
+        </thead>
+        <tbody>
+          {listLoading ? (
+            <tr><td colSpan={9} align="center" className="small">불러오는 중...</td></tr>
+          ) : rows.length === 0 ? (
+            <tr><td colSpan={9} align="center" className="small">데이터 없음</td></tr>
+          ) : rows.map(u => (
+            <tr key={u.username}>
+              <td className="mono" style={{ whiteSpace: "nowrap" }} translate="no">
+                <span className="notranslate" translate="no" lang="en">{u.username}</span>
+              </td>
+              <td align="center">
+                <input type="checkbox" checked={!!u.is_active}
+                       onChange={(e)=>onToggleActive(u, e.target.checked)} />
+              </td>
+              <td align="center">
+                <input
+                  type="checkbox"
+                  checked={!!u.allow_concurrent}
+                  onChange={async (e)=>{
+                    try{
+                      setActionLoading(true);
+                      await axios.post(`${API_BASE}/admin/set_allow_concurrent`, { username:u.username, allow:e.target.checked });
+                      await refreshList();
+                    } finally { setActionLoading(false); }
+                  }}
+                />
+              </td>
+              <td align="center" style={{whiteSpace:"nowrap"}}>
+                <span style={{color:u.remaining_days<=3?"#dc2626":"inherit",fontWeight:u.remaining_days<=3?600:400}}>
+                  {u.remaining_days}
+                </span>
+              </td>
+              <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.paid_until)}</td>
+              <td title={u.note || ""} style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:260}}>
+                {u.note?.trim() ? u.note : "-"}
+              </td>
+              <td className="mono" title={u.site_url || "-"}
+                  style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}>
+                {u.site_url || "-"}
+              </td>
+              <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.created_at)}</td>
+              <td>
+                <div style={{display:"flex",gap:6,flexWrap:"nowrap",overflowX:"auto"}}>
+                  <button className="btn-sm" onClick={()=>setFUser(v=>({...v, username:u.username}))}>연장대상</button>
+                  <button className="btn-sm" onClick={()=>onResetPassword(u)}>비번초기화</button>
+                  <button
+                    className="btn-sm"
+                    onClick={()=>{
+                      const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
+                      if(!add) return;
+                      setActionLoading(true);
+                      axios.post(`${API_BASE}/admin/issue_user`, { username:u.username, days:add, note:"+연장" })
+                        .then(()=>refreshList())
+                        .finally(()=>setActionLoading(false));
+                    }}
+                  >+연장</button>
+                  <button className="btn-sm" style={{color:"#dc2626",borderColor:"#fecaca"}} onClick={()=>onDeleteUser(u)}>삭제</button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {/* ───────── 한 줄 게시판 관리 카드 ───────── */}
+  <div className="card" style={{ marginBottom: 0 }}>
+    <h2 className="h2">한 줄 게시판 관리</h2>
+
+    {/* 툴바 */}
+    <div className="toolbar" style={{ marginBottom: 10 }}>
+      <input className="input" style={{width:160}} placeholder="작성자(ID)"
+        value={boardUser} onChange={e=>setBoardUser(e.target.value)} />
+      <input className="input" style={{width:220}} placeholder="내용 검색(포함)"
+        value={boardQ} onChange={e=>setBoardQ(e.target.value)} />
+      <label className="small" style={{display:"flex",alignItems:"center",gap:6}}>
+        <input type="checkbox" checked={boardPinnedOnly} onChange={e=>setBoardPinnedOnly(e.target.checked)} />
+        고정만
+      </label>
+      <label className="small" style={{display:"flex",alignItems:"center",gap:6}}>
+        <input type="checkbox" checked={boardIncludeHidden} onChange={e=>setBoardIncludeHidden(e.target.checked)} />
+        삭제(숨김) 포함
+      </label>
+      <button className="btn" onClick={loadBoardList} disabled={boardLoading}>
+        {boardLoading ? "불러오는 중..." : "새로고침"}
+      </button>
+    </div>
+
+    {/* 작성자(ID) 부분검색 — 카드 내부 */}
+    <div style={{ display:"flex", flexDirection:"column", gap:8, margin:"6px 0 12px" }}>
+      <input
+        className="input"
+        placeholder="작성자(ID) 검색 — 부분일치·1글자 가능"
+        value={userSearchQ}
+        onChange={(e)=>{ const v = e.target.value; setUserSearchQ(v); searchUsersDebounced(v); }}
+        style={{ maxWidth: 360 }}
+      />
+      {userSearchQ && (
+        <div style={{ border:"1px solid #e5e7eb", borderRadius:8, padding:8, maxHeight:240, overflowY:"auto" }}>
+          {(userSearchRes || []).map(u => (
+            <div key={u.username} style={{ display:"grid", gridTemplateColumns:"1fr auto", alignItems:"center", padding:"6px 4px", borderBottom:"1px solid #f3f4f6" }}>
+              <div>
+                <div className="mono" style={{ whiteSpace:"nowrap" }}>{u.username}</div>
+                <div className="small" style={{ opacity:.8 }}>권한: {u.role || "-"}</div>
+              </div>
+              <div style={{ display:"flex", gap:6 }}>
+                <button className="btn-sm" onClick={async ()=>{
+                  await axios.post(`${API_BASE}/admin/board_block_user`, { username: u.username, blocked: true });
+                  await loadBoardList(); await refreshList(); searchUsersDebounced(userSearchQ);
+                }}>정지</button>
+                <button className="btn-sm" onClick={async ()=>{
+                  await axios.post(`${API_BASE}/admin/board_block_user`, { username: u.username, blocked: false });
+                  await loadBoardList(); await refreshList(); searchUsersDebounced(userSearchQ);
+                }}>해제</button>
+              </div>
             </div>
-          </div>
-
-          <div ref={usersScrollRef} className="scrollx">
-            <table className="table minw-users">
-              <thead>
-  <tr>
-    <th style={{width:160}}>아이디</th>
-    <th style={{width:66}}>활성</th>
-    <th style={{width:66}}>동시</th>
-    <th style={{width:70}}>남은</th>
-    <th style={{width:120}}>만료일</th>
-    <th style={{width:260}}>메모</th>
-    <th style={{width:220}}>제한 도메인</th> {/* (= site_url) */}
-    <th style={{width:120}}>생성일</th>
-    <th style={{width:280}}>작업</th>
-  </tr>
-</thead>
-
-<tbody>
-  {listLoading ? (
-    <tr><td colSpan={9} align="center" className="small">불러오는 중...</td></tr>
-  ) : rows.length === 0 ? (
-    <tr><td colSpan={9} align="center" className="small">데이터 없음</td></tr>
-  ) : rows.map(u => (
-    <tr key={u.username}>
-      {/* 아이디: 폭 확대 + 줄바꿈 금지 */}
-      <td className="mono" style={{ whiteSpace: "nowrap" }} translate="no">
-  <span className="notranslate" translate="no" lang="en">{u.username}</span>
-</td>
-
-
-      {/* 활성 */}
-      <td align="center">
-        <input
-          type="checkbox"
-          checked={!!u.is_active}
-          onChange={(e)=>onToggleActive(u, e.target.checked)}
-          title={u.is_active ? "활성 ON" : "활성 OFF"}
-        />
-      </td>
-
-      {/* 동시접속 허용 */}
-      <td align="center">
-        <input
-          type="checkbox"
-          checked={!!u.allow_concurrent}
-          onChange={async (e)=>{
-            try{
-              setActionLoading(true);
-              await axios.post(`${API_BASE}/admin/set_allow_concurrent`, { username:u.username, allow:e.target.checked });
-              await refreshList();
-            } finally { setActionLoading(false); }
-          }}
-          title={u.allow_concurrent ? "동시접속 허용" : "동시접속 차단"}
-        />
-      </td>
-
-      {/* 남은일수: 임박 강조만 유지 */}
-      <td align="center" style={{whiteSpace:"nowrap"}}>
-        <span style={{color:u.remaining_days<=3?"#dc2626":"inherit",fontWeight:u.remaining_days<=3?600:400}}>
-          {u.remaining_days}
-        </span>
-      </td>
-
-      {/* 만료일: compact */}
-      <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.paid_until)}</td>
-
-      {/* 메모: 한 줄/말줄임 + 툴팁(hover로 풀텍스트 보기) */}
-      <td
-        title={u.note || ""}
-        style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:260}}
-      >
-        {u.note?.trim() ? u.note : "-"}
-      </td>
-
-      {/* 제한 도메인(site_url): 한 줄/말줄임 + 툴팁 */}
-      <td
-        className="mono"
-        title={u.site_url || "-"}
-        style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}
-      >
-        {u.site_url || "-"}
-      </td>
-
-      {/* 생성일: compact */}
-      <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.created_at)}</td>
-
-      {/* 작업: 작은 버튼 4개를 한 줄로 */}
-      <td>
-        <div style={{display:"flex",gap:6,flexWrap:"nowrap",overflowX:"auto"}}>
-          <button className="btn-sm" onClick={()=>setFUser(v=>({...v, username:u.username}))}>연장대상</button>
-          <button className="btn-sm" onClick={()=>onResetPassword(u)}>비번초기화</button>
-          <button
-            className="btn-sm"
-            onClick={()=>{
-              const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
-              if(!add) return;
-              setActionLoading(true);
-              axios.post(`${API_BASE}/admin/issue_user`, { username:u.username, days:add, note:"+연장" })
-                .then(()=>refreshList())
-                .finally(()=>setActionLoading(false));
-            }}
-          >+연장</button>
-          <button className="btn-sm" style={{color:"#dc2626",borderColor:"#fecaca"}} onClick={()=>onDeleteUser(u)}>삭제</button>
+          ))}
+          {(!userSearchRes || userSearchRes.length===0) && (
+            <div className="small" style={{ color:"#9ca3af" }}>검색 결과가 없습니다.</div>
+          )}
         </div>
-      </td>
-    </tr>
-  ))}
-</tbody>
-            </table>
-          </div>
-        </div>
+      )}
+    </div>
+
+    {/* 게시글 목록: 고정 높이 + 내부 스크롤 */}
+    <div
+      style={{
+        maxHeight: 420,          // 10~20행 정도 보이게 조절 (320~480에서 취향대로)
+        overflowY: "auto",
+        overflowX: "auto",
+        border: "1px solid #e5e7eb",
+        borderRadius: 8
+      }}
+    >
+      <div className="scrollx" style={{ overflowY: "visible" }}>
+        <table className="table" style={{ width: "100%", tableLayout: "auto", minWidth: 900 }}>
+          <thead>
+            <tr>
+              <th style={{width:70}}>고정</th>
+              <th>내용</th>
+              <th style={{width:220}}>작성자</th>
+              <th style={{width:160}}>작성시각</th>
+              <th style={{width:100}}>상태</th>
+              <th style={{width:160}}>조작</th>
+            </tr>
+          </thead>
+          <tbody>
+            {boardRows.length ? boardRows.map(p=>(
+              <tr key={p.id} style={p.hidden ? {opacity:.6} : undefined}>
+                <td align="center">
+                  <input type="checkbox" checked={!!p.pinned} onChange={()=>onTogglePin(p)} />
+                </td>
+                <td><div style={{whiteSpace:"pre-wrap"}}>{p.content || ""}</div></td>
+                <td>
+                  <div className="mono">{p.username}</div>
+                  <div className="small" style={{marginTop:6, display:"flex", gap:6, alignItems:"center"}}>
+                    <span>작성권한:</span>
+                    {p.user_blocked ? (
+                      <>
+                        <span className="badge" style={{background:"#fee2e2",color:"#991b1b"}}>정지</span>
+                        <button className="btn-sm" onClick={()=>onToggleUserBlock(p.username, false)}>해제</button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="badge" style={{background:"#ecfdf5",color:"#065f46"}}>허용</span>
+                        <button className="btn-sm" onClick={()=>onToggleUserBlock(p.username, true)}>정지</button>
+                      </>
+                    )}
+                  </div>
+                </td>
+                <td>{p.created_at ? fmtDate(p.created_at) : "-"}</td>
+                <td>{p.hidden ? "삭제됨" : "정상"}</td>
+                <td>
+                  <button className="btn-sm" style={{color:"#dc2626",borderColor:"#fecaca"}} onClick={()=>onDeletePost(p)}>삭제</button>
+                </td>
+              </tr>
+            )) : (
+              <tr><td colSpan={6} align="center" className="small">데이터 없음</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
 
         {/* 우: 운영 통계 + 트래픽 (보조) */}
         <div className="right-col">

@@ -365,6 +365,222 @@ const [guestMode, setGuestMode] = useState(false);
     userRole === "manager"
   );
 
+// === [ADD] 게시판 전용 로그인 상태 (메인 토큰과 분리) ===
+const [boardLoggedIn, setBoardLoggedIn] = useState(() => {
+  try { return sessionStorage.getItem("glefit_board_ok") === "1"; } catch { return false; }
+});
+const [boardLogging, setBoardLogging] = useState(false);
+
+// 게시판 전용 토큰 (미니 로그인용)
+const [boardToken, setBoardToken] = useState(() => {
+  try { return sessionStorage.getItem("glefit_board_token") || ""; } catch { return ""; }
+});
+
+// 공통 인증 헤더: 메인 토큰 > 게시판 토큰
+function authHeaders() {
+  const t = (token || boardToken || "").trim();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+
+// 미니로그인 입력은 기존 loginU/loginP 상태를 재사용해도 OK (동일 계정)
+// 게시판 전용 로그인: 메인 토큰/헤더는 건드리지 않음
+async function doBoardLogin(e) {
+  e?.preventDefault();
+  if (boardLogging) return;
+  try {
+    setBoardLogging(true);
+
+    // 1) 로그인해서 토큰 받기
+    const { data } = await axios.post(`${API_BASE}/auth/login`, {
+      username: loginU,
+      password: loginP,
+    });
+    const t = data?.access_token || data?.token;
+    if (!t) throw new Error("토큰 없음");
+
+    // 2) 게시판 전용 토큰 저장(+표시 플래그)
+    setBoardToken(t);
+    try {
+      sessionStorage.setItem("glefit_board_ok", "1");
+      sessionStorage.setItem("glefit_board_token", t);
+    } catch {}
+
+    // 3) (선택) 관리자 여부 캐시
+    try {
+      const me = await axios.get(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${t}` }
+      });
+      const role =
+        me?.data?.role ||
+        me?.data?.user?.role ||
+        me?.data?.payload?.role || "";
+      const isAdmin =
+        String(role || "").toLowerCase() === "admin" ||
+        me?.data?.is_admin || me?.data?.isAdmin;
+      sessionStorage.setItem("glefit_board_is_admin", isAdmin ? "1" : "0");
+    } catch {}
+
+    setBoardLoggedIn(true);
+  } catch (err) {
+    alert("게시판 로그인 실패: 아이디/비번을 확인하세요.");
+  } finally {
+    setBoardLogging(false);
+  }
+}
+
+function doBoardLogout() {
+  setBoardLoggedIn(false);
+  try { sessionStorage.removeItem("glefit_board_token"); } catch {}
+  setBoardToken("");
+  setLoginU("");
+  setLoginP("");
+}
+
+
+
+// === [ADD] 한 줄 홍보게시판: 로컬 저장 + 서버 연동 준비형 ===
+const BOARD_KEY = "glefit_board_v1";
+
+const [boardPosts, setBoardPosts] = useState(() => {
+  try { return JSON.parse(localStorage.getItem(BOARD_KEY) || "[]"); } catch { return []; }
+});
+
+// [ADD] 서버 목록 로더
+async function loadBoardList() {
+  try {
+    const { data } = await axios.get(`${API_BASE}/board/list`);
+    const items = Array.isArray(data?.items) ? data.items : [];
+    // pinned DESC, ts DESC 정렬은 서버에서도 하지만, 안전하게 프론트도 동일 정렬
+    const sorted = [...items].sort((a,b)=> (b.pinned?1:0)-(a.pinned?1:0) || b.ts - a.ts);
+    setBoardPosts(sorted);
+  } catch (e) {
+    // 서버 실패 시, 기존 로컬 값 유지
+  }
+}
+
+useEffect(() => {
+  loadBoardList();
+  // 로그인/권한이 바뀌면 목록 새로고침
+}, [token, boardLoggedIn, isAdmin]);
+
+useEffect(() => {
+  try {
+    if (boardPosts.length > 100) {
+      const trimmed = [...boardPosts].sort((a,b)=>a.ts-b.ts).slice(-100);
+      localStorage.setItem(BOARD_KEY, JSON.stringify(trimmed));
+      setBoardPosts(trimmed);
+    } else {
+      localStorage.setItem(BOARD_KEY, JSON.stringify(boardPosts));
+    }
+  } catch {}
+}, [boardPosts]);
+
+const [boardInput, setBoardInput] = useState("");
+const [boardErr, setBoardErr] = useState("");
+
+// ▶ 게시판 작성자 판정: 토큰 로그인 사용자 우선,
+//    미니게시판에 별도 로그인한 경우에만 loginU 허용
+const myId = React.useMemo(() => {
+  const tokenUser = (me?.username || "").trim();
+  if (tokenUser) return tokenUser;
+  return boardLoggedIn ? (loginU || "").trim() : "";
+}, [me, loginU, boardLoggedIn]);
+
+const todayKey = new Date().toISOString().slice(0,10);
+function countTodayByUser(uid) {
+  const dayStart = new Date(todayKey+"T00:00:00").getTime();
+  const dayEnd   = new Date(todayKey+"T23:59:59").getTime();
+  return (boardPosts || []).filter(p => p.user===uid && p.ts>=dayStart && p.ts<=dayEnd).length;
+}
+
+// 기본: 1 ID/일 2회, 관리자 무제한 (관리자 UI로 가변 확장 예정)
+const DEFAULT_DAILY_LIMIT = 2;
+const dailyLimitFor = (uid) => (isAdmin ? 9999 : DEFAULT_DAILY_LIMIT);
+
+async function addPost() {
+  setBoardErr("");
+  const text = (boardInput || "").trim();
+  if (!boardLoggedIn && !token) { setBoardErr("로그인 후 작성 가능합니다."); return; }
+  if (!text) { setBoardErr("내용을 입력하세요."); return; }
+  if (text.length > 60) { setBoardErr("한 줄(60자) 제한을 초과했습니다."); return; }
+
+  try {
+    const res = await axios.post(`${API_BASE}/board/add`, { text }, { headers: authHeaders() });
+    if (res?.data?.ok) {
+      const item = res.data.item;
+      setBoardPosts(prev => {
+        const next = [item, ...prev].sort((a,b)=> (b.pinned?1:0)-(a.pinned?1:0) || b.ts - a.ts);
+        return next.slice(0, 200);
+      });
+      setBoardInput("");
+      setBoardErr("");
+    } else {
+      const e = res?.data?.error || "ERR";
+      if (e === "LIMIT") setBoardErr("일일 작성 한도를 초과했습니다.");
+      else if (e === "BLOCKED") setBoardErr("작성 정지된 사용자입니다.");
+      else if (e === "TOO_LONG") setBoardErr("한 줄(60자) 제한입니다.");
+      else setBoardErr("작성 실패");
+    }
+  } catch (err) {
+    const s = err?.response?.status;
+    if (s === 400 && err?.response?.data?.error === "LIMIT") {
+      setBoardErr("일일 작성 한도를 초과했습니다.");
+    } else if (s === 403 && err?.response?.data?.error === "BLOCKED") {
+      setBoardErr("작성 정지된 사용자입니다.");
+    } else {
+      setBoardErr("작성 실패");
+    }
+  }
+}
+
+async function deletePost(id) {
+  try {
+    const { data } = await axios.post(`${API_BASE}/board/delete`, { id }, { headers: authHeaders() });
+    if (data?.ok) {
+      setBoardPosts(prev => prev.filter(p => p.id !== id));
+    } else {
+      alert("삭제 실패");
+    }
+  } catch {
+    alert("삭제 실패(권한 또는 네트워크)");
+  }
+}
+
+async function editPost(id, nextText) {
+  const t = (nextText || "").trim();
+  if (!t || t.length > 60) return alert("한 줄(60자) 제한");
+
+  try {
+    const { data } = await axios.post(`${API_BASE}/board/edit`, { id, text: t }, { headers: authHeaders() });
+    if (data?.ok) {
+      setBoardPosts(prev => prev.map(p => p.id === id ? { ...p, text: t } : p));
+    } else {
+      alert("수정 실패");
+    }
+  } catch {
+    alert("수정 실패(권한 또는 네트워크)");
+  }
+}
+
+async function togglePin(id) {
+  if (!isAdmin) return alert("관리자만 상단 고정 가능");
+  try {
+    const { data } = await axios.post(`${API_BASE}/board/toggle_pin`, { id }, { headers: authHeaders() });
+    if (data?.ok) {
+      setBoardPosts(prev => {
+        const next = prev.map(p => p.id === id ? { ...p, pinned: !!data.pinned } : p);
+        return next.sort((a,b)=> (b.pinned?1:0)-(a.pinned?1:0) || b.ts - a.ts);
+      });
+    } else {
+      alert("상단고정 실패");
+    }
+  } catch {
+    alert("상단고정 실패(권한 또는 네트워크)");
+  }
+}
+
+
   // ▶ 상단 공지 (로컬 저장)
   const [notice, setNotice] = React.useState(
     localStorage.getItem("glefit_notice") || ""
@@ -387,8 +603,40 @@ const [guestMode, setGuestMode] = useState(false);
 const [showNoticeModal, setShowNoticeModal] = useState(false);
 
 // === 업로드 제한 상수/유틸 ===
-const MAX_FILES_USER = 50;           // 일반
-const MAX_FILES_GUEST = 3;           // 체험(비로그인/게스트)
+const MAX_FILES_USER = 50;
+const MAX_FILES_GUEST = 3;
+
+// [ADD] 100KB 제한(일반/체험판), 관리자는 무제한
+const MAX_TEXT_BYTES_NON_ADMIN = 100 * 1024;
+
+// 로그인/역할 상태를 이미 갖고 있다면 그대로 사용 (isAdmin, guestMode, token 등)
+// 예: const isGuest = guestMode || !token; const canUploadUnlimited = !!isAdmin;
+
+// [ADD] 초과 파일 필터
+const getFileSizeBytes = (f) => (f && typeof f.size === "number" ? f.size : 0);
+
+function filterOversizeFiles(list = [], canUploadUnlimited) {
+  if (canUploadUnlimited) return list; // 관리자 예외
+  const kept = [];
+  const dropped = [];
+  for (const f of list) {
+    const name = f?.name || "";
+    const lower = name.toLowerCase();
+    // 기존 포맷 필터는 유지
+    if (!(lower.endsWith(".txt") || lower.endsWith(".docx"))) continue;
+    const sz = getFileSizeBytes(f);
+    if (sz > MAX_TEXT_BYTES_NON_ADMIN) dropped.push({ name, size: sz });
+    else kept.push(f);
+  }
+  if (dropped.length) {
+    alert(
+      "일반/체험판은 항목당 100KB까지만 업로드할 수 있습니다.\n제외된 파일:\n" +
+      dropped.map((x) => `- ${x.name} (${x.size} bytes)`).join("\n")
+    );
+  }
+  return kept;
+}
+
 const isGuest = guestMode || !token; // 게스트 모드이거나 토큰 없으면 게스트
 const canUploadUnlimited = !!isAdmin; // 관리자는 무제한
 
@@ -497,7 +745,10 @@ async function decodeTxtBest(arrayBuffer) {
 
 
   const [text, setText] = useState("");
-  const [highlightedHTML, setHighlightedHTML] = useState(""); // 중앙 하이라이트 전용(합본)
+  const [highlightedHTML, setHighlightedHTML] = useState("");
+
+  // [ADD] 검사화면 줄바꿈 토글: 기본=자동 줄바꿈 켜짐
+  const [wrapLongLines, setWrapLongLines] = useState(true);
   const [results, setResults] = useState([]); // 현재 표시 중인 파일의 개별 결과
   const [resultsVerify, setResultsVerify] = useState([]); // /verify 전용
   const [resultsPolicy, setResultsPolicy] = useState([]); // /policy_verify 전용
@@ -734,34 +985,41 @@ const loadFileContent = async (file, idx = null) => {
 };
 
 const replaceAllFiles = async (arr) => {
-  const onlySupported = (arr || []).filter((f) => {
-    const lower = f.name.toLowerCase();
+  // 1) 포맷 필터
+  let onlySupported = (arr || []).filter((f) => {
+    const lower = (f.name || "").toLowerCase();
     return lower.endsWith(".txt") || lower.endsWith(".docx");
   });
+
+  // 2) 100KB 초과 파일 제거 (관리자 무제한)
+  onlySupported = filterOversizeFiles(onlySupported, !!isAdmin);
+
+  // 3) 정렬
   onlySupported.sort((a, b) => a.name.localeCompare(b.name));
 
-  // ✅ 업로드 목록 상태에 반영 (여기가 빠져 있었습니다)
+  // 4) 업로드 목록 상태에 반영
   setFiles(onlySupported);
   setFileIndex(0);
-  setIntraExactGroups([]);
-// 보기 패널 즉시 깨끗하게
-setIntraSimilarPairs([]);
-setInterExactGroups([]); // 교차 결과도 함께 초기화
-setInterSimilarPairs([]);
-setInterSimilarGroups([]);
 
-if (onlySupported.length) {
-  await loadFileContent(onlySupported[0], 0);
-  setKeywordInput(getKeywordsFromFilename(onlySupported[0]));
-} else {
-  // 파일이 하나도 없을 때 화면 정리
-  setText("");
-  setResultsVerify([]);
-  setResultsPolicy([]);
-  setResults([]);
-  setHighlightedHTML("");
-  setAiSummary(null);
-}
+  // 5) 보기 패널 초기화
+  setIntraExactGroups([]);
+  setIntraSimilarPairs([]);
+  setInterExactGroups([]);
+  setInterSimilarPairs([]);
+  setInterSimilarGroups([]);
+
+  // 6) 첫 파일 로드 or 화면 정리
+  if (onlySupported.length) {
+    await loadFileContent(onlySupported[0], 0);
+    setKeywordInput(getKeywordsFromFilename(onlySupported[0]));
+  } else {
+    setText("");
+    setResultsVerify([]);
+    setResultsPolicy([]);
+    setResults([]);
+    setHighlightedHTML("");
+    setAiSummary(null);
+  }
 };
 
 const handleFileInputChange = async (e) => {
@@ -1941,9 +2199,13 @@ root.appendChild(foot);
   termSec.appendChild(tbl);
 
   // 6) 보고서 루트에 "주의사항" 바로 위에 끼워넣기
-  const footEl = rootEl.querySelector('.rp-footnotes');
-  if (footEl) rootEl.insertBefore(termSec, footEl);
-  else rootEl.appendChild(termSec);
+ const footEl = rootEl.querySelector('.rp-footnotes');
+ if (footEl && footEl.parentNode === rootEl) {
+   rootEl.insertBefore(termSec, footEl);
+ } else {
+   // reference 노드가 없거나 직계가 아니면 안전하게 뒤에 붙이기
+   rootEl.appendChild(termSec);
+ }
 })(root);
 // 오프스크린 렌더 + 차트 그리기
 const holder = document.createElement("div");
@@ -2862,12 +3124,13 @@ if (!simGroups.length) {
 }
 root.appendChild(secSim);
 
+await new Promise(r => setTimeout(r, 0)); // 커밋 프레임 분리 (안전 대기)
 // 오프스크린 렌더 & PDF 저장
 const holder = document.createElement("div");
 holder.style.position = "fixed";
 holder.style.left = "-9999px";
 holder.style.top = "0";
-holder.appendChild(root);
+holder.appendChild(wrap);
 document.body.appendChild(holder);
 
 const opt = {
@@ -2877,7 +3140,7 @@ const opt = {
   html2canvas: { scale: 2, useCORS: true, letterRendering: true, backgroundColor: "#ffffff" },
   jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
 };
-await window.html2pdf().set(opt).from(root).save();
+await window.html2pdf().set(opt).from(wrap).save();
 document.body.removeChild(holder);
 } catch (e) {
   console.error(e);
@@ -2911,169 +3174,292 @@ const jumpToFileOffset = async (targetFileName, start, end, original = "", befor
   }
 };
 
-// [ADD] login gate rendering (place BEFORE the main return)
-if (!token && !guestMode) {  // ← 게스트 모드일 때는 에디터로 진입
+// === [REPLACE or ADD] Login gate rendering (grid로 완전 분리, 겹침 방지) ===
+if (!token && !guestMode) {
   return (
-    <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "#f6f7fb" }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "grid",
+        // ▶ 너비/여백 재조정: 오른쪽 치우침 방지
+        gridTemplateColumns: "minmax(620px,1fr) 420px",
+        gap: 24,
+        background: "#eef2f7",
+        padding: "32px 24px",
+        alignItems: "start",
+        maxWidth: 1200,
+        margin: "0 auto",
+      }}
+    >
+      {/* 좌: 한 줄 홍보게시판 (고정 높이 + 스크롤) */}
+      <div
+        style={{
+          background: "#fff",
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          display: "flex",
+          flexDirection: "column",
+          maxHeight: "80vh",
+          overflow: "hidden",
+        }}
+      >
+        {/* 상단 공지 + 미니 로그인 (sticky) */}
+        <div
+          style={{
+            borderBottom: "1px solid #f0f2f5",
+            padding: "10px 12px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            position: "sticky",
+            top: 0,
+            background: "#fff",
+            zIndex: 1,
+          }}
+        >
+          <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
+            <b>📢 공지</b>
+            <div style={{ color: "#6b7280", fontSize: 13, maxWidth: 480, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {notice || "동시 접속자가 많아 검사 시간이 지연될 수 있습니다"}
+            </div>
+          </div>
+
+          {/* ▶ 미니 로그인바: doBoardLogin 사용 (메인 doLogin 아님) */}
+          <form onSubmit={doBoardLogin} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {/* boardLoggedIn이면 '접속중' 배지 + 해제 버튼 */}
+            {boardLoggedIn ? (
+              <>
+                <span style={{ fontSize: 12, padding: "4px 8px", borderRadius: 999, background: "#ecfdf5", color: "#065f46", border: "1px solid #a7f3d0" }}>
+                  접속중
+                </span>
+                <button type="button" onClick={doBoardLogout} style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff" }}>
+                  해제
+                </button>
+              </>
+            ) : (
+              <>
+                <input
+                  value={loginU}
+                  onChange={(e) => setLoginU(e.target.value)}
+                  placeholder="ID"
+                  style={{ width: 90, fontSize: 12, padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+                />
+                <input
+                  type="password"
+                  value={loginP}
+                  onChange={(e) => setLoginP(e.target.value)}
+                  placeholder="PW"
+                  style={{ width: 90, fontSize: 12, padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+                />
+                <button type="submit" disabled={boardLogging} style={{ fontSize: 12, padding: "6px 10px", borderRadius: 6, border: "1px solid #d1d5db", background: "#f9fafb" }}>
+                  {boardLogging ? "확인중..." : "로그인"}
+                </button>
+              </>
+            )}
+          </form>
+        </div>
+
+{isAdmin && (
+  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", margin: "4px 12px 8px" }}>
+    <span style={{ fontSize: 12, opacity: 0.7 }}>관리자 메뉴</span>
+    <button
+      type="button"
+      onClick={async () => {
+        if (!confirm("정말 전체 삭제(숨김 처리) 하시겠습니까?")) return;
+        try {
+          const { data } = await axios.post(`${API_BASE}/board/admin/delete_all`, {}, { headers: authHeaders() });
+          if (data?.ok) {
+            setBoardPosts([]); // 즉시 UI 비우기
+          } else {
+            alert("전체 삭제 실패");
+          }
+        } catch {
+          alert("전체 삭제 실패(권한 또는 네트워크)");
+        }
+      }}
+      style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #e5e7eb", background: "#fff" }}
+    >
+      전체 삭제
+    </button>
+  </div>
+)}
+
+        {/* 글 목록 */}
+        <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+          {(boardPosts || []).length === 0 && (
+            <div style={{ color: "#9ca3af", fontSize: 14 }}>첫 홍보 글을 남겨 보세요. (로그인 필요)</div>
+          )}
+
+          {(boardPosts || []).map((p) => (
+            <div
+              key={p.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto",
+                gap: 8,
+                alignItems: "center",
+                borderBottom: "1px solid #f3f4f6",
+                padding: "6px 4px",
+                fontSize: 14,
+              }}
+              title={new Date(p.ts).toLocaleString()}
+            >
+              <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                {p.pinned && <span style={{ fontSize: 12, color: "#b91c1c" }}>📌</span>}
+                <span style={{ color: "#374151", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  [{p.user}] {p.text}
+                </span>
+              </div>
+
+              <div style={{ display: "flex", gap: 6 }}>
+                {(isAdmin || (boardLoggedIn && p.user === (myId || ""))) && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const t = prompt("수정할 내용을 입력하세요(60자 이내)", p.text);
+                        if (t == null) return;
+                        editPost(p.id, t);
+                      }}
+                      style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #e5e7eb", borderRadius: 6, background: "#fff" }}
+                    >
+                      수정
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deletePost(p.id)}
+                      style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #e5e7eb", borderRadius: 6, background: "#fff" }}
+                    >
+                      삭제
+                    </button>
+                  </>
+                )}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => togglePin(p.id)}
+                    style={{ fontSize: 12, padding: "2px 6px", border: "1px solid #e5e7eb", borderRadius: 6, background: "#fff" }}
+                  >
+                    {p.pinned ? "고정 해제" : "상단 고정"}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* 글쓰기: ▶ boardLoggedIn 기준 (메인 토큰 아님) */}
+        <form
+          onSubmit={(e) => { e.preventDefault(); addPost(); }}
+          style={{
+            borderTop: "1px solid #f0f2f5",
+            padding: 12,
+            display: "grid",
+            gridTemplateColumns: "1fr auto",
+            gap: 8,
+          }}
+        >
+          <input
+            value={boardInput}
+            onChange={(e)=> setBoardInput(e.target.value)}
+            disabled={!boardLoggedIn}
+            maxLength={60}
+            placeholder={boardLoggedIn ? "한 줄 메시지 (60자 제한 / 1 ID 하루 2회)" : "로그인 후 작성 가능 (읽기만 가능)"}
+            style={{ padding: "10px 12px", border: "1px solid #d1d5db", borderRadius: 8 }}
+          />
+          <button
+            type="submit"
+            disabled={!boardLoggedIn}
+            style={{
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: "1px solid #d1d5db",
+              background: boardLoggedIn ? "#111827" : "#f3f4f6",
+              color: boardLoggedIn ? "#fff" : "#9ca3af",
+              cursor: boardLoggedIn ? "pointer" : "not-allowed",
+            }}
+          >
+            등록
+          </button>
+          {!!boardErr && <div style={{ gridColumn: "1 / -1", color: "#b91c1c", fontSize: 12 }}>{boardErr}</div>}
+        </form>
+      </div>
+
+      {/* 우: 메인 로그인 카드 (진짜 글핏 진입) */}
       <form
         onSubmit={doLogin}
         style={{
-          width: 360,
+          width: "100%",
           background: "#fff",
           padding: 24,
           border: "1px solid #e5e8ef",
           borderRadius: 12,
           boxShadow: "0 6px 20px rgba(0,0,0,0.06)",
+          height: "fit-content",
+          position: "sticky",
+          top: 24,
         }}
       >
-<h2 style={{ marginTop: 0 }}>하루 1,100원 다 문서 중복체크 글핏</h2>
+        <h2 style={{ marginTop: 0, marginBottom: 8 }}>하루 1,100원 다 문서 중복체크 글핏</h2>
+        <div style={{ color: "#6b7280", fontSize: 13, marginBottom: 12 }}>
+          **본 로그인은 글핏 서비스 본편으로 진입합니다.**
+        </div>
 
-{/* 로그인 화면 상단 공지 */}
-<aside
-  aria-label="공지"
-  style={{
-    marginTop: 8,
-    padding: "12px 14px",
-    border: "1px solid #e5e7eb",
-    borderRadius: 12,
-    background: "#f8fafc",
-    color: "#374151",
-    fontSize: 13,
-    lineHeight: 1.65,
-  }}
->
-  <div style={{ fontWeight: 800, marginBottom: 8 }}>공지</div>
+        <div style={{ marginBottom: 12 }}>
+          <input
+            value={loginU}
+            onChange={(e) => setLoginU(e.target.value)}
+            placeholder="아이디"
+            style={{ width: "100%", padding: "10px", border: "1px solid #d6dbe6", borderRadius: 8 }}
+          />
+        </div>
 
-  <div>
-    현재 <b>순차적으로 ID 발급 중</b>이며 <b>응답이 지연</b>될 수 있습니다.<br/>
-    최대한 빠르게 처리하겠습니다. 감사합니다.
-  </div>
+        <div style={{ marginBottom: 12 }}>
+          <input
+            type="password"
+            value={loginP}
+            onChange={(e) => setLoginP(e.target.value)}
+            placeholder="비밀번호"
+            style={{ width: "100%", padding: "10px", border: "1px solid #d6dbe6", borderRadius: 8 }}
+          />
+        </div>
 
-  <div style={{ marginTop: 8 }}>
-    입금 후 <b>“문의”</b>남겨주시면 <b>더 빠르게 ID 발급</b> 가능합니다.
-  </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}>
+          <label>
+            <input
+              type="checkbox"
+              checked={rememberId}
+              onChange={(e) => setRememberId(e.target.checked)}
+              style={{ marginRight: 6 }}
+            />
+            아이디 저장
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={autoLogin}
+              onChange={(e) => setAutoLogin(e.target.checked)}
+              style={{ marginRight: 6 }}
+            />
+            자동 로그인
+          </label>
+        </div>
 
-  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-    <b>농협 352-1639-3012-83 늘솜제작소(남기태)</b>
-    <button
-      type="button"
-      onClick={() => navigator.clipboard?.writeText("농협 352-1639-3012-83")}
-      style={{
-        padding: "4px 8px",
-        fontSize: 12,
-        border: "1px solid #d1d5db",
-        borderRadius: 6,
-        background: "#fff",
-        cursor: "pointer"
-      }}
-      title="계좌번호 복사"
-    >
-      복사
-    </button>
-  </div>
-
-  <div style={{ marginTop: 4 }}>계정당 <b>33,000원/월</b></div>
-
-  <div style={{ marginTop: 8 }}>
-    <b>세금계산서</b> 발행 - <b>사업자등록증</b>과 <b>메일주소</b>전달 바랍니다.
-  </div>
-
-  <div style={{ marginTop: 8 }}>
-    문의 카카오 <b>txt365</b> · 시간 <b>10시~16시 (주말·공휴일 제외)</b>
-  </div>
-</aside>
-
-{/* === 로그인 입력영역 (교체) === */}
-<div style={{ marginBottom: 12 }}>
-  <input
-    value={loginU}
-    onChange={(e) => setLoginU(e.target.value)}
-    placeholder="아이디"
-    style={{
-      width: "100%",
-      height: 44,                 // ✅ 높이 통일
-      boxSizing: "border-box",
-      padding: "10px 12px",       // ✅ 패딩 통일
-      fontSize: 14,               // ✅ 폰트 통일
-      border: "1px solid #d1d5db",
-      borderRadius: 8,
-      background: "#f9fafb",
-      color: "#111827",
-      outline: "none",
-    }}
-  />
-</div>
-
-<div style={{ marginBottom: 12 }}>
-  <input
-    type="password"
-    value={loginP}
-    onChange={(e) => setLoginP(e.target.value)}
-    placeholder="비밀번호"
-    style={{
-      width: "100%",
-      height: 44,                 // ✅ 높이 통일
-      boxSizing: "border-box",
-      padding: "10px 12px",       // ✅ 패딩 통일
-      fontSize: 14,               // ✅ 폰트 통일
-      border: "1px solid #d1d5db",
-      borderRadius: 8,
-      background: "#f9fafb",
-      color: "#111827",
-      outline: "none",
-    }}
-  />
-</div>
-
-<div
-  style={{
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",         // ✅ 수직 정렬
-    gap: 16,
-    fontSize: 13,
-    marginBottom: 8,
-  }}
->
-  <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-    <input
-      type="checkbox"
-      checked={rememberId}
-      onChange={(e) => setRememberId(e.target.checked)}
-      style={{ width: 16, height: 16 }}
-    />
-    아이디 저장
-  </label>
-  <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-    <input
-      type="checkbox"
-      checked={autoLogin}
-      onChange={(e) => setAutoLogin(e.target.checked)}
-      style={{ width: 16, height: 16 }}
-    />
-    자동 로그인
-  </label>
-</div>
-
-{loginErr && (
-  <div style={{ color: "#b20000", marginBottom: 8 }}>{loginErr}</div>
-)}
-
-<button
-  type="submit"
-  style={{
-    width: "100%",
-    height: 44,                   // ✅ 버튼도 높이 통일
-    fontSize: 14,
-    background: "#111827",
-    color: "#fff",
-    border: "none",
-    borderRadius: 8,
-    cursor: "pointer",
-  }}
->
-  로그인
-</button>
+        {loginErr && <div style={{ color: "#b91c1c", fontSize: 12, marginBottom: 8 }}>{loginErr}</div>}
+        <button
+          type="submit"
+          style={{
+            width: "100%",
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid #111827",
+            background: "#111827",
+            color: "#fff",
+            fontWeight: 600,
+          }}
+        >
+          로그인
+        </button>
 
         {/* ───── 추가: 구분선 + 데모 체험 버튼/안내 ───── */}
         <div style={{ margin: "10px 0", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>또는</div>
@@ -3478,22 +3864,27 @@ return (
           }}
         >
           <p style={{ margin: 0 }}>
-            📂 <b>여러 폴더/파일</b>을 드래그하면 하위의 txt/docx만 자동 추출합니다.
-          </p>
+  📂 <b>여러 폴더/파일</b>을 드래그하면 하위의 txt/docx만 자동 추출합니다.
+</p>
 
-          <div style={{ marginTop: 8 }}>
-            <label style={{ marginRight: 8 }}>파일 선택:</label>
-            <input type="file" accept=".txt,.docx" multiple onChange={handleFileInputChange} />
-          </div>
+{/* [ADD] 100KB 고정 안내문 */}
+<p style={{ marginTop: 6, fontSize: 12, color: "#666" }}>
+  일반/체험판은 <b>항목당 100KB</b>까지만 업로드할 수 있습니다. (초과 파일은 업로드 목록에서 제외)
+</p>
 
-          <div style={{ marginTop: 6 }}>
-            <label style={{ marginRight: 8 }}>폴더 선택:</label>
-            <input type="file" webkitdirectory="true" directory="true" multiple onChange={handleFileInputChange} />
-          </div>
+<div style={{ marginTop: 8 }}>
+  <label style={{ marginRight: 8 }}>파일 선택:</label>
+  <input type="file" accept=".txt,.docx" multiple onChange={handleFileInputChange} />
+</div>
 
-          <p style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
-            새로 드래그/선택하면 <b>기존 업로드 목록은 초기화</b>됩니다.
-          </p>
+<div style={{ marginTop: 6 }}>
+  <label style={{ marginRight: 8 }}>폴더 선택:</label>
+  <input type="file" webkitdirectory="true" directory="true" multiple onChange={handleFileInputChange} />
+</div>
+
+<p style={{ marginTop: 8, fontSize: 12, color: "#666" }}>
+  새로 드래그/선택하면 <b>기존 업로드 목록은 초기화</b>됩니다.
+</p>
         </div>
 
         <div
@@ -3692,7 +4083,17 @@ return (
 
       {/* 중앙: 하이라이트 + 단어찾기(아래) */}
       <div style={{ flex: 1.1, padding: 16, background: "#fafafa", border: "1px solid #ddd", borderRadius: 8 }}>
-        <h3>📄 검사 화면</h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+  <h3 style={{ margin: 0 }}> 📄 검사(간헐적 양식 깨짐 현상 검사 후 복원됩니다.)</h3>
+  <label style={{ fontSize: 12, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}>
+    <input
+      type="checkbox"
+      checked={wrapLongLines}
+      onChange={(e) => setWrapLongLines(e.target.checked)}
+    />
+    긴 줄 자동 줄바꿈
+  </label>
+</div>
 
         <div
           id="highlight-view"
@@ -3703,8 +4104,9 @@ return (
             overflowY: "auto",
             background: "#fff",
             fontSize: 16,
-            whiteSpace: "pre-wrap",
-            wordBreak: "keep-all",
+            whiteSpace: wrapLongLines ? "pre-wrap" : "pre",
+            wordBreak: wrapLongLines ? "break-word" : "normal",
+            overflowWrap: wrapLongLines ? "anywhere" : "normal",
             lineHeight: 1.6,
             borderRadius: 6,
           }}
@@ -3971,21 +4373,20 @@ return (
   </div>
 </div>
 
-{/* 여러 문서 간 */}
-<div style={{ marginTop: 10 }}>
-  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-    <span style={{ fontWeight: "bold" }}>여러 문서 간</span>
+{/* ───────── 박스 #3: 여러 문서 간 중복문장/유사 탐지 ───────── */}
+<div style={{ marginTop: 16, padding: 16, background: "#eef6ff", border: "1px solid #cfe2ff", borderRadius: 8 }}>
+  <h3 style={{ marginTop: 0 }}>🔁 여러 문서 간 중복문장·유사 탐지</h3>
 
+  {/* 옵션 */}
+  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
     <label
-  title={
-`최소 글자 수 가이드
+      title={`최소 글자 수 가이드
 권장 범위: 4~12자 / 실무 평균값: 6~8자
 
 4~5자: 짧은 관용구·조사 중심 문장이 많이 끼어들어 오탐↑
 6~8자: 짧은 감탄/접속 문장 걸러지고 균형적
-10~12자: 짧은 문장·항목이 많이 제외되어 정밀(재현율↓)`
-  }
->
+10~12자: 짧은 문장·항목이 많이 제외되어 정밀(재현율↓)`}
+    >
       최소 글자 수 <span style={{ color: "#6b7280", marginLeft: 4 }}>(기준치)</span>
       <input
         type="number"
@@ -3997,8 +4398,7 @@ return (
     </label>
 
     <label
-  title={
-`유사도 기준 가이드
+      title={`유사도 기준 가이드
 권장 범위 : 0.65 ~ 0.80
 
 실무 평균값:
@@ -4007,9 +4407,8 @@ return (
 
 0.65~0.69: 느슨(재현↑/정밀↓)
 0.70~0.74: 보통
-0.75~0.80: 타이트(정밀↑/재현↓)`
-  }
->
+0.75~0.80: 타이트(정밀↑/재현↓)`}
+    >
       유사도 기준 <span style={{ color: "#6b7280", marginLeft: 4 }}>(기준값)</span>
       <input
         type="number"
@@ -4020,13 +4419,11 @@ return (
       />
     </label>
 
-    <button onClick={handleInterDedup} disabled={!files.length}>
-      탐지
-    </button>
+    <button onClick={handleInterDedup} disabled={!files.length}>탐지</button>
   </div>
 
+  {/* 저장 버튼들 */}
   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
-    {/* 그룹별 보고서 단독 */}
     <button
       onClick={saveInterDedupReportPDF}
       disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
@@ -4035,7 +4432,6 @@ return (
       그룹 보고서(PDF)
     </button>
 
-    {/* 문서별 통합 보고서 단독 (모든 원고를 한 파일에) */}
     <button
       onClick={savePerDocDedupReportPDF}
       disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
@@ -4044,7 +4440,6 @@ return (
       문서별 통합(PDF)
     </button>
 
-    {/* 두 가지를 연속 저장 */}
     <button
       onClick={handleDedupPDFBoth}
       disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
@@ -4054,6 +4449,7 @@ return (
     </button>
   </div>
 
+  {/* 결과 영역 */}
   <div
     style={{
       maxHeight: 200,
@@ -4068,60 +4464,44 @@ return (
     {!interExactGroups.length && !interSimilarGroups.length && (
       <div style={{ color: "#666" }}>결과 없음</div>
     )}
-{/* ==== 파일 간 유사 그룹(클러스터) ==== */}
-{!interSimilarGroups.length ? (
-  <div style={{ fontSize: 13, color: "#666" }}>결과 없음</div>
-) : (
-  interSimilarGroups.map((g, gi) => (
-    <div
-      key={gi}
-      style={{
-        border: "1px solid #e5e7eb",
-        borderRadius: 8,
-        padding: "8px 10px",
-        margin: "8px 0",
-      }}
-    >
-      <div style={{ fontSize: 12, color: "#444", marginBottom: 6 }}>
-        유사 그룹 {gi + 1} · 문장 수 {g.size} · 평균유사도 {g.avgScore} (최대 {g.maxScore})
-      </div>
 
-      {g.representative && (
-        <div style={{ fontSize: 12, fontStyle: "italic", color: "#555", marginBottom: 6 }}>
-          대표: {g.representative}
-        </div>
-      )}
-
-      {(g.occurrences || []).map((o, oi) => (
+    {/* ==== 파일 간 유사 그룹(클러스터) ==== */}
+    {!interSimilarGroups.length ? (
+      <div style={{ fontSize: 13, color: "#666" }}>결과 없음</div>
+    ) : (
+      interSimilarGroups.map((g, gi) => (
         <div
-          key={oi}
+          key={gi}
           style={{
-            fontSize: 13,
-            padding: "4px 0",
-            borderTop: oi === 0 ? "none" : "1px dashed #eee",
-            cursor: "pointer",
-            background: "#fdfdfd",
-            borderRadius: 4,
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+            padding: "8px 10px",
+            margin: "8px 0",
           }}
-          title={`${o.file} 로 이동`}
-          onClick={() =>
-            jumpToFileOffset(
-              o.file,
-              Number(o.start) || 0,
-              Number(o.end) || 0,
-              o.original || "",
-              o.before || "",
-              o.after || ""
-            )
-          }
         >
-          {o.file} / {o.line}번째 줄 / {o.original}
+          <div style={{ fontSize: 12, color: "#444", marginBottom: 6 }}>
+            유사 그룹 {gi + 1} · 문장 수 {g.size} · 평균유사도 {g.avgScore} (최대 {g.maxScore})
+          </div>
+
+          {g.representative && (
+            <div style={{ fontSize: 12, fontStyle: "italic", color: "#555", marginBottom: 6 }}>
+              대표: {g.representative}
+            </div>
+          )}
+
+          {(g.items || g.pairs || []).map((p, pi) => {
+            const a = p?.a || {}, b = p?.b || {};
+            return (
+              <div key={pi} style={{ fontSize: 12, margin: "4px 0" }}>
+                <div>• {a.file} #{a.line} — {a.text}</div>
+                <div>  ↔ {b.file} #{b.line} — {b.text} (유사도 {p?.score ?? p?.sim ?? p?.similarity})</div>
+              </div>
+            );
+          })}
         </div>
-      ))}
-    </div>
-  ))
-)}
-</div>
+      ))
+    )}
+  </div>
 </div>
 </div>
 </div>
