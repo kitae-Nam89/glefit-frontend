@@ -3474,21 +3474,82 @@ if (!token && !guestMode) {
           데모 체험(제한 모드)
         </button>
 
-        <p style={{ marginTop: 12, fontSize: 12, color: "#6b7280" }}>
-            ※ 체험판은 로그인 없이 사용 가능: 업로드 3건 / 단어찾기·다문서 중복
-        </p>
-        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-            ※ 입금 승인된 계정만 사용 가능합니다.
-        </p>
-        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-            ※ 환불은 불가하며, 서비스 사용 내역(검사 횟수·파일 수)이 기록됩니다. 결제 전 반드시 데모 체험으로 확인하세요.
-        </p>
-        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-            ※ 1계정 1접속만 가능합니다. 계정 공유·대여 시 이용이 제한됩니다.
-        </p>
-        <p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-            ※ 모든 검수 결과는 참고용이며, 최종 게시 전 담당자의 확인이 필요합니다.
-        </p>
+{/* ====== 상단 고정 안내(강조) ====== */}
+<div
+  style={{
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    padding: 12,
+    background: "#fff",
+    marginBottom: 12,
+  }}
+>
+  <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#111827" }}>
+    💳 계정당 <span style={{ color: "#dc2626" }}>33,000원/월</span>
+    <span style={{ fontWeight: 500, color: "#6b7280" }}>
+      {" "} (계정 공유·대여 시 이용 제한)
+    </span>
+  </p>
+
+  <p style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: "#1d4ed8" }}>
+    📞 글핏 이용 문의: txt365 (카카오톡)<br />
+    <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 400 }}>
+      ※ 문의는 내부 사정에 따라 최대 1~2일이 소요될 수 있으며,<br />
+      &nbsp;&nbsp;&nbsp;공휴일·주말은 응답이 불가합니다.
+    </span>
+  </p>
+
+  <p style={{ marginTop: 8, fontSize: 14, color: "#111827", fontWeight: 600 }}>
+    🏦 입금: 농협 352-1639-3012-83 (늘솜제작소 / 남기태)
+  </p>
+
+  <p style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: "#0f766e" }}>
+    ⚡ 빠른 ID 발급 방법
+  </p>
+
+  <div
+    style={{
+      marginTop: 6,
+      padding: 8,
+      background: "#f9fafb",
+      border: "1px dashed #e5e7eb",
+      borderRadius: 8,
+      lineHeight: 1.6,
+    }}
+  >
+    <div style={{ fontSize: 13, color: "#6b7280" }}>결제 후</div>
+    <div style={{ fontSize: 13, color: "#6b7280" }}>
+      입금자명: <span style={{ color: "#9ca3af" }}>입금자 오류 시 발급이 지연될 수 있습니다.</span>
+    </div>
+    <div style={{ fontSize: 13, color: "#6b7280" }}>회사명 또는 담당자명:</div>
+    <div style={{ fontSize: 13, color: "#6b7280" }}>
+      간략 요청 사항: 원하는 ID와 비밀번호 등 <span style={{ color: "#9ca3af" }}>중복 시 랜덤</span>
+    </div>
+    <div style={{ fontSize: 13, color: "#6b7280" }}>
+      세금계산서: <span style={{ color: "#9ca3af" }}>사업자등록증과 메일주소 필수 전달</span>
+    </div>
+  </div>
+</div>
+
+{/* ====== 기존 멘트(아래 유지) ====== */}
+<p style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+  ※ 체험판은 로그인 없이 사용 가능: 업로드 3건 / 단어찾기·다문서 중복
+</p>
+<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+  ※ 서비스 운영 일정 및 요금 정책은 예고 없이 변경될 수 있습니다. 
+</p>
+<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+  ※ ID·비밀번호는 타인과 공유하지 말고 개인 보관을 권장드립니다. 
+</p>
+<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+  ※ 1계정 1접속만 가능하며, 계정 공유·대여 시 이용이 제한됩니다.
+</p>
+<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+  ※ 환불은 불가하며, 서비스 사용 내역(횟수·파일 수)이 기록됩니다.
+</p>
+<p style={{ marginTop: 4, fontSize: 12, color: "#dc2626", fontWeight: 700 }}>
+  ⚠ 모든 검수 결과는 참고용입니다. 최종 게시 전 담당자 확인이 필수입니다.
+</p>
       </form>
     </div>
   );

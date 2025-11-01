@@ -70,7 +70,20 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY, timeout=30)
 
 MODEL = "gpt-4o"
-DB_PATH = "rewrite.db"
+import os, shutil
+
+# 디폴트는 로컬 파일, 환경변수(DB_PATH)로 덮어쓰기
+DB_PATH = os.getenv("DB_PATH", "rewrite.db")
+
+# (선택) 마이그레이션 도우미: /app/rewrite.db → /data/rewrite.db 로 최초 1회 복사
+try:
+    app_db = os.path.join(os.path.dirname(__file__), "rewrite.db")
+    if os.getenv("DB_PATH") and os.getenv("DB_PATH") != "rewrite.db":
+        os.makedirs(os.path.dirname(os.getenv("DB_PATH")), exist_ok=True)
+        if os.path.exists(app_db) and not os.path.exists(os.getenv("DB_PATH")):
+            shutil.copy2(app_db, os.getenv("DB_PATH"))
+except Exception:
+    pass
 MAX_CHARS_PER_CHUNK = 4000
 
 # [ADD] JWT config
