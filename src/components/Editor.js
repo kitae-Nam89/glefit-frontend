@@ -466,8 +466,8 @@ useEffect(() => {
 
 useEffect(() => {
   try {
-    if (boardPosts.length > 100) {
-      const trimmed = [...boardPosts].sort((a,b)=>a.ts-b.ts).slice(-100);
+    if (boardPosts.length > 200) {
+      const trimmed = [...boardPosts].sort((a,b)=>a.ts-b.ts).slice(-200);
       localStorage.setItem(BOARD_KEY, JSON.stringify(trimmed));
       setBoardPosts(trimmed);
     } else {
@@ -3184,7 +3184,7 @@ if (!token && !guestMode) {
         // ▶ 너비/여백 재조정: 오른쪽 치우침 방지
         gridTemplateColumns: "minmax(620px,1fr) 420px",
         gap: 24,
-        background: "#eef2f7",
+        background: "#fff",
         padding: "32px 24px",
         alignItems: "start",
         maxWidth: 1200,

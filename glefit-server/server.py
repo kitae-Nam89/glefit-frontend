@@ -1432,6 +1432,54 @@ def admin_board_user_search():
     items = [{"username": r[0], "blocked": (int(r[1] or 2) <= 0), "daily_limit": int(r[1] or 2)} for r in rows]
     return jsonify({"ok": True, "items": items})
 
+# === board posts: 최대 200개 유지 ===
+MAX_BOARD_POSTS = 200
+
+def trim_board_to_max():
+    """
+    hidden=0(노출 대상) 게시글을 MAX_BOARD_POSTS 개까지만 유지.
+    1) 비고정(pinned=0)에서 오래된 순으로 먼저 삭제
+    2) 그래도 초과면 전체에서 오래된 순으로 추가 삭제
+    """
+    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+
+    # 현재 노출 개수
+    cur.execute("SELECT COUNT(*) FROM board_posts WHERE hidden=0")
+    total = int(cur.fetchone()[0] or 0)
+    excess = total - MAX_BOARD_POSTS
+    if excess > 0:
+        # 1) 비고정 먼저 정리
+        cur.execute("""
+            SELECT id FROM board_posts
+            WHERE hidden=0 AND pinned=0
+            ORDER BY ts ASC
+            LIMIT ?
+        """, (excess,))
+        ids = [r[0] for r in cur.fetchall()]
+        if ids:
+            cur.executemany("DELETE FROM board_posts WHERE id=?", [(i,) for i in ids])
+            conn.commit()
+
+        # 다시 계산
+        cur.execute("SELECT COUNT(*) FROM board_posts WHERE hidden=0")
+        total = int(cur.fetchone()[0] or 0)
+        excess = total - MAX_BOARD_POSTS
+
+        # 2) 그래도 남으면 전체에서 오래된 순 삭제
+        if excess > 0:
+            cur.execute("""
+                SELECT id FROM board_posts
+                WHERE hidden=0
+                ORDER BY ts ASC
+                LIMIT ?
+            """, (excess,))
+            ids2 = [r[0] for r in cur.fetchall()]
+            if ids2:
+                cur.executemany("DELETE FROM board_posts WHERE id=?", [(i,) for i in ids2])
+                conn.commit()
+
+    conn.close()
+
 # ===== 관리자: 한 줄 홍보 게시판 =====
 @app.get("/admin/board_list")
 @require_admin
@@ -1467,8 +1515,9 @@ def admin_board_list():
       LEFT JOIN users u ON u.username = p.username
       {where_sql}
       ORDER BY p.pinned DESC, p.ts DESC
+      LIMIT ?
     """
-    cur.execute(sql, params)
+    cur.execute(sql, params + [MAX_BOARD_POSTS])
     rows = cur.fetchall()
     conn.close()
 
@@ -1575,10 +1624,16 @@ def create_board_post():
         "VALUES (?, ?, ?, 0, 0, strftime('%s','now'))",
         (str(uuid.uuid4()), username, content)
     )
-    conn.commit(); conn.close()
+    conn.commit()
+
+    # ▶ 새 글 추가 직후 초과분 정리
+    try:
+        trim_board_to_max()
+    except Exception:
+        pass
+
+    conn.close()
     return jsonify({"ok": True})
-
-
 
 # 로컬 맞춤법 초기화
 _init_symspell()
