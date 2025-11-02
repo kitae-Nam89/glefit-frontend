@@ -367,14 +367,33 @@ const [guestMode, setGuestMode] = useState(false);
 
 // === [ADD] 게시판 전용 로그인 상태 (메인 토큰과 분리) ===
 const [boardLoggedIn, setBoardLoggedIn] = useState(() => {
-  try { return sessionStorage.getItem("glefit_board_ok") === "1"; } catch { return false; }
+  try { return localStorage.getItem("glefit_board_ok") === "1"; } catch { return false; }
 });
 const [boardLogging, setBoardLogging] = useState(false);
 
 // 게시판 전용 토큰 (미니 로그인용)
 const [boardToken, setBoardToken] = useState(() => {
-  try { return sessionStorage.getItem("glefit_board_token") || ""; } catch { return ""; }
+  try { return localStorage.getItem("glefit_board_token") || ""; } catch { return ""; }
 });
+
+// === [1회용 마이그레이션: sessionStorage → localStorage] ===
+useEffect(() => {
+  try {
+    const ok  = sessionStorage.getItem("glefit_board_ok");
+    const tk  = sessionStorage.getItem("glefit_board_token");
+    const ia  = sessionStorage.getItem("glefit_board_is_admin");
+
+    if (ok || tk || ia) {
+      if (ok) localStorage.setItem("glefit_board_ok", ok);
+      if (tk) localStorage.setItem("glefit_board_token", tk);
+      if (ia) localStorage.setItem("glefit_board_is_admin", ia);
+
+      sessionStorage.removeItem("glefit_board_ok");
+      sessionStorage.removeItem("glefit_board_token");
+      sessionStorage.removeItem("glefit_board_is_admin");
+    }
+  } catch {}
+}, []);
 
 // 공통 인증 헤더: 메인 토큰 > 게시판 토큰
 function authHeaders() {
@@ -402,8 +421,8 @@ async function doBoardLogin(e) {
     // 2) 게시판 전용 토큰 저장(+표시 플래그)
     setBoardToken(t);
     try {
-      sessionStorage.setItem("glefit_board_ok", "1");
-      sessionStorage.setItem("glefit_board_token", t);
+      localStorage.setItem("glefit_board_ok", "1");
+      localStorage.setItem("glefit_board_token", t);
     } catch {}
 
     // 3) (선택) 관리자 여부 캐시
@@ -418,7 +437,7 @@ async function doBoardLogin(e) {
       const isAdmin =
         String(role || "").toLowerCase() === "admin" ||
         me?.data?.is_admin || me?.data?.isAdmin;
-      sessionStorage.setItem("glefit_board_is_admin", isAdmin ? "1" : "0");
+      try { localStorage.setItem("glefit_board_is_admin", isAdmin ? "1" : "0"); } catch {}
     } catch {}
 
     setBoardLoggedIn(true);
@@ -431,13 +450,15 @@ async function doBoardLogin(e) {
 
 function doBoardLogout() {
   setBoardLoggedIn(false);
-  try { sessionStorage.removeItem("glefit_board_token"); } catch {}
+  try {
+    localStorage.removeItem("glefit_board_token");
+    localStorage.removeItem("glefit_board_ok");
+    localStorage.removeItem("glefit_board_is_admin");
+  } catch {}
   setBoardToken("");
   setLoginU("");
   setLoginP("");
 }
-
-
 
 // === [ADD] 한 줄 홍보게시판: 로컬 저장 + 서버 연동 준비형 ===
 const BOARD_KEY = "glefit_board_v1";
@@ -452,7 +473,12 @@ async function loadBoardList() {
     const { data } = await axios.get(`${API_BASE}/board/list`);
     const items = Array.isArray(data?.items) ? data.items : [];
     // pinned DESC, ts DESC 정렬은 서버에서도 하지만, 안전하게 프론트도 동일 정렬
-    const sorted = [...items].sort((a,b)=> (b.pinned?1:0)-(a.pinned?1:0) || b.ts - a.ts);
+    const sorted = [...items].sort((a,b)=>
+      (b.pinned?1:0)-(a.pinned?1:0) ||
+      ((a.pin_rank ?? 9e9) - (b.pin_rank ?? 9e9)) ||
+      (b.ts - a.ts)
+    );
+
     setBoardPosts(sorted);
   } catch (e) {
     // 서버 실패 시, 기존 로컬 값 유지
