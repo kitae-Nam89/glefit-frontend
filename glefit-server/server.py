@@ -74,6 +74,7 @@ import os, shutil
 
 # 디폴트는 로컬 파일, 환경변수(DB_PATH)로 덮어쓰기
 DB_PATH = os.getenv("DB_PATH", "rewrite.db")
+print(f"[DB] Using DB_PATH={DB_PATH}")  # ← 부팅 로그 확인용
 
 # (선택) 마이그레이션 도우미: /app/rewrite.db → /data/rewrite.db 로 최초 1회 복사
 try:
