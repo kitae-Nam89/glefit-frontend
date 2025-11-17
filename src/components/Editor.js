@@ -35,7 +35,7 @@ const API_BASE =
      ? "http://127.0.0.1:5000"
      : "https://glefit.onrender.com");
 
-// 3) axios baseURL 적용 (⚠️ axios import는 파일 상단 import 구역에 있어야 함)
+// 3) axios baseURL 적용⚠️ axios import는 파일 상단 import 구역에 있어야 함)
 axios.defaults.baseURL = API_BASE;
 
 // 4) 토큰/헤더 유틸 상수
@@ -183,6 +183,14 @@ const escapeHTML = (str = "") =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+
+// === 공백 무시 정규식 (전역 유틸) ===
+// 예: "정확 판단" ↔ "정확한   판단을" 매칭
+const buildLooseRegex = (phrase = "") => {
+  const escaped  = String(phrase).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const loosened = escaped.replace(/\s+/g, "\\s*");
+  return new RegExp(loosened, "gu"); // u 플래그 유지
+};
 
 const getKeywordsFromFilename = (file) => {
   if (!file) return "";
@@ -782,21 +790,26 @@ async function decodeTxtBest(arrayBuffer) {
   const [files, setFiles] = useState([]);
   const [fileIndex, setFileIndex] = useState(0);
 
+  // === 필수가이드 입력 및 결과 ===
+  const [requiredText, setRequiredText] = useState("");   // 사용자가 적는 '필수가이드' 다중 줄 입력
+  const [requiredResults, setRequiredResults] = useState([]); // 항목별 검사 결과 (있음/없음)
+
+
   // 🔴 파일별 캐시 구조 확장
   // fileResults[fileName] = { text, verify:[], policy:[], highlightedHTML, aiSummary }
   const [fileResults, setFileResults] = useState({});
   const [isChecking, setIsChecking] = useState(false);
   const [currentBatchIndex, setCurrentBatchIndex] = useState(0);
 
-  // 키워드(파일명 자동 채움, 로컬저장)
-  const [keywordInput, setKeywordInput] = useState(
-    () => localStorage.getItem("glfit_keywords") || ""
-  );
+  // 키워드(파일명 자동 채움, **세션 내 파일별 유지**)
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywordByFile, setKeywordByFile] = useState({});
 
   // 단어찾기(키워드와 분리, 로컬저장)
   const [termInput, setTermInput] = useState(
     () => localStorage.getItem("glfit_terms") || ""
   );
+
 
   // 결과 패널 필터
   const [filterPolicyOnly, setFilterPolicyOnly] = useState(false);
@@ -816,6 +829,9 @@ async function decodeTxtBest(arrayBuffer) {
   const [interSimTh, setInterSimTh] = useState(0.70);
   const [intraMinLen, setIntraMinLen] = useState(6);
   const [intraSimTh, setIntraSimTh] = useState(0.70);
+
+  // 여러 문서 간 중복 탐지 진행 상태
+  const [isInterChecking, setIsInterChecking] = useState(false);
 
   const textareaRef = useRef(null);
 
@@ -869,12 +885,18 @@ function flushQueue() {
 }
 
   // ========= 로컬 스토리지 =========
-  useEffect(() => {
-    localStorage.setItem("glfit_keywords", keywordInput || "");
-  }, [keywordInput]);
+  // 키워드는 새로고침/재접속 때 항상 비우기 위해 localStorage에 저장하지 않음
   useEffect(() => {
     localStorage.setItem("glfit_terms", termInput || "");
   }, [termInput]);
+
+  // (선택) 예전 버전에서 남아 있을 수 있는 glfit_keywords 키는 한 번 지워줌
+  useEffect(() => {
+    try {
+      localStorage.removeItem("glfit_keywords");
+    } catch {}
+  }, []);
+
 // ========= 파생 데이터(통계) =========
 const parsedKeywords = (keywordInput || "")
   .split(",")
@@ -886,23 +908,23 @@ const parsedTerms = (termInput || "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const keywordStats = useMemo(
-  () =>
-    parsedKeywords.map((kw) => ({
-      word: kw,
-      count: (text.match(new RegExp(escapeRegExp(kw), "g")) || []).length,
-    })),
-  [parsedKeywords, text]
-);
+// generateHighlightedHTML 내부에 이미 존재하는 buildLooseRegex(공백 무시)를 재사용하세요.
+const keywordStats = useMemo(() =>
+  parsedKeywords.map((kw) => {
+    const re = buildLooseRegex(kw);
+    let c = 0, m;
+    while ((m = re.exec(text)) !== null) { c++; if (re.lastIndex === m.index) re.lastIndex++; }
+    return { word: kw, count: c };
+  }), [parsedKeywords, text]);
 
-const termStats = useMemo(
-  () =>
-    parsedTerms.map((t) => ({
-      word: t,
-      count: (text.match(new RegExp(escapeRegExp(t), "g")) || []).length,
-    })),
-  [parsedTerms, text]
-);
+const termStats = useMemo(() =>
+  parsedTerms.map((t) => {
+    const re = buildLooseRegex(t);
+    let c = 0, m;
+    while ((m = re.exec(text)) !== null) { c++; if (re.lastIndex === m.index) re.lastIndex++; }
+    return { word: t, count: c };
+  }), [parsedTerms, text]);
+
 
 // ========= 파일 추출/적재 =========
 //⬇️ 이 함수 전체를 교체
@@ -978,22 +1000,35 @@ const collectFilesFromDataTransfer = async (dataTransfer) => {
 const loadFileContent = async (file, idx = null) => {
   if (!file) return;
   const textContent = await extractFileText(file);
-  setText(textContent);
-  // (선택) 파일명 → 키워드 자동 세팅 비활성
-  setKeywordInput(getKeywordsFromFilename(file));
+  setText(normalizeForIndexing(textContent)); // ⬅️ 통일
+  // 🔹 키워드는 여기서 직접 건드리지 않음
+  //    (파일 전환 함수에서 keywordByFile 기반으로 세팅)
 
   const cached = fileResults[file.name];
   if (cached) {
-    // 🔴 분리 결과 복원
-    setResultsVerify(Array.isArray(cached.verify) ? cached.verify : []);
-    setResultsPolicy(Array.isArray(cached.policy) ? cached.policy : []);
-    const merged = [
-      ...(Array.isArray(cached.verify) ? cached.verify : []),
-      ...(Array.isArray(cached.policy) ? cached.policy : []),
-    ];
-    setResults(merged);
-    setHighlightedHTML(cached.highlightedHTML || "");
-    setAiSummary(cached.aiSummary || null);
+      setResultsVerify(Array.isArray(cached.verify) ? cached.verify : []);
+      setResultsPolicy(Array.isArray(cached.policy) ? cached.policy : []);
+      const merged = [
+        ...(Array.isArray(cached.verify) ? cached.verify : []),
+        ...(Array.isArray(cached.policy) ? cached.policy : []),
+        ...(Array.isArray(cached.required) ? cached.required : [])   // ⭐ 필수가이드 복원
+      ];
+      setResults(merged);
+
+      // ⭐ 필수가이드 전용 결과 복원
+      setRequiredResults(Array.isArray(cached.required) ? cached.required : []);
+
+      // ⭐ 한 문서 중복 검사 결과 복원
+      setIntraExactGroups(cached.intraExactGroups || []);
+      setIntraSimilarPairs(cached.intraSimilarPairs || []);
+
+      // ⭐ 다문서 중복 검사 결과 복원
+      setInterExactGroups(cached.interExactGroups || []);
+      setInterSimilarPairs(cached.interSimilarPairs || []);
+      setInterSimilarGroups(cached.interSimilarGroups || []);
+
+      setHighlightedHTML(cached.highlightedHTML || "");
+      setAiSummary(cached.aiSummary || null);
   } else {
     setResultsVerify([]);
     setResultsPolicy([]);
@@ -1002,12 +1037,23 @@ const loadFileContent = async (file, idx = null) => {
     setAiSummary(null);
   }
 
-  // 중복탐지 패널 초기화
-  setInterExactGroups([]); // ⬅️ 교차(여러 문서 간) 결과까지 초기화
-  setInterSimilarPairs([]);
-  setInterSimilarGroups([]);
-  setIntraExactGroups([]);
-  setIntraSimilarPairs([]);
+// ❌ 기존: 파일 이동시 중복결과/필수가이드 모두 초기화됨 → 문제 발생
+// ⬇⬇ 완전 교체
+
+// 캐시에 저장된 결과가 있을 경우 복원하고
+// 없으면 그 파일은 검사한 적 없는 파일이므로 빈 값 유지.
+if (cached) {
+    setRequiredResults(cached.required || []);
+    setIntraExactGroups(cached.intraExactGroups || []);
+    setIntraSimilarPairs(cached.intraSimilarPairs || []);
+
+    // 교차(다문서) 중복은 전역 패널에서만 쓰므로 복원하지 않음
+    // (원하는 경우 복원 코드 여기에 추가 가능)
+} else {
+    setRequiredResults([]);
+    setIntraExactGroups([]);
+    setIntraSimilarPairs([]);
+}
 };
 
 const replaceAllFiles = async (arr) => {
@@ -1034,10 +1080,18 @@ const replaceAllFiles = async (arr) => {
   setInterSimilarPairs([]);
   setInterSimilarGroups([]);
 
+  // 🔹 파일별 키워드 기본값 초기화 (파일명 기반)
+  const initialKeywordMap = {};
+  onlySupported.forEach((f) => {
+    initialKeywordMap[f.name] = getKeywordsFromFilename(f);
+  });
+  setKeywordByFile(initialKeywordMap);
+
   // 6) 첫 파일 로드 or 화면 정리
   if (onlySupported.length) {
-    await loadFileContent(onlySupported[0], 0);
-    setKeywordInput(getKeywordsFromFilename(onlySupported[0]));
+    const first = onlySupported[0];
+    await loadFileContent(first, 0);
+    setKeywordInput(initialKeywordMap[first.name] || "");
   } else {
     setText("");
     setResultsVerify([]);
@@ -1045,6 +1099,7 @@ const replaceAllFiles = async (arr) => {
     setResults([]);
     setHighlightedHTML("");
     setAiSummary(null);
+    setKeywordInput("");
   }
 };
 
@@ -1071,9 +1126,28 @@ const handleDragOver = (e) => e.preventDefault();
 const handleNextFile = async () => {
   const next = fileIndex + 1;
   if (next < files.length) {
+    const f = files[next];
     setFileIndex(next);
-    await loadFileContent(files[next], next);
-    setKeywordInput(getKeywordsFromFilename(files[next]));
+    await loadFileContent(f, next);
+
+    if (f) {
+      const name = f.name;
+      // 이미 저장된 값이 있으면 그 값, 없으면 파일명에서 추출
+      const existing =
+        (keywordByFile && keywordByFile[name]) || getKeywordsFromFilename(f);
+
+      // map에 없던 경우 기본값 채워넣기
+      if (!keywordByFile || keywordByFile[name] === undefined) {
+        setKeywordByFile((prev) => ({
+          ...(prev || {}),
+          [name]: existing,
+        }));
+      }
+
+      setKeywordInput(existing);
+    } else {
+      setKeywordInput("");
+    }
   } else {
     alert("더 이상 파일이 없습니다.");
   }
@@ -1082,180 +1156,340 @@ const handleNextFile = async () => {
 const handlePrevFile = async () => {
   const prev = fileIndex - 1;
   if (prev >= 0) {
+    const f = files[prev];
     setFileIndex(prev);
-    await loadFileContent(files[prev], prev);
-    setKeywordInput(getKeywordsFromFilename(files[prev]));
+    await loadFileContent(f, prev);
+
+    if (f) {
+      const name = f.name;
+      const existing =
+        (keywordByFile && keywordByFile[name]) || getKeywordsFromFilename(f);
+
+      if (!keywordByFile || keywordByFile[name] === undefined) {
+        setKeywordByFile((prev) => ({
+          ...(prev || {}),
+          [name]: existing,
+        }));
+      }
+
+      setKeywordInput(existing);
+    } else {
+      setKeywordInput("");
+    }
   } else {
     alert("이전 파일이 없습니다.");
   }
 };
 
-// (REPLACE) generateHighlightedHTML — 원문 유지 + dataset 첨부 + 유연 검증
+// === 인덱스 계산 통일용: CRLF/NBSP/Tab 정규화 ===
+function normalizeForIndexing(str) {
+  return String(str || "")
+    .replace(/\r\n/g, "\n")   // CRLF → LF
+    .replace(/\u00A0/g, " ")  // NBSP → space
+    .replace(/\t/g, " ");     // tab → space
+}
+
+// (REPLACE) generateHighlightedHTML — 원문 유지 + dataset 첨부 + 유연
 const generateHighlightedHTML = (raw, matches, keywords, terms) => {
-  const text = String(raw || "");
+  // 0) 인덱스 기준 통일
+  const text = normalizeForIndexing(raw || "");
   const N = text.length;
 
   const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
   const norm = (s = "") => String(s).replace(/\s+/g, " ").trim();
-  const esc = (s = "") =>
-    String(s)
+
+  const esc = (str = "") =>
+    String(str || "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+
   const escAttr = (s = "") => esc(String(s)).replace(/"/g, "&quot;");
 
-  const resolve = (full, r) => {
-    const orig = String(r?.original || "");
-    const bef = String(r?.before || "");
-    const aft = String(r?.after || "");
-    const s0 = Number.isFinite(r?.startIndex) ? r.startIndex : -1;
-    const e0 = Number.isFinite(r?.endIndex) ? r.endIndex : -1;
+  // 줄바꿈 보존 (pre-wrap + <br/> 둘 다 사용해도 안전)
+  const renderSeg = (s = "") => esc(String(s)).replace(/\r\n/g, "\n").replace(/\n/g, "<br/>");
 
-    if (s0 >= 0 && e0 > s0 && e0 <= full.length) return { s: s0, e: e0 };
-
-    if (bef && orig && aft) {
-      const i = full.indexOf(bef + orig + aft);
-      if (i >= 0) return { s: i + bef.length, e: i + bef.length + orig.length };
-    }
-    if (bef && orig) {
-      const i = full.indexOf(bef + orig);
-      if (i >= 0) return { s: i + bef.length, e: i + bef.length + orig.length };
-    }
-    if (orig && aft) {
-      const i = full.indexOf(orig + aft);
-      if (i >= 0) return { s: i, e: i + orig.length };
-    }
-    if (orig) {
-      let best = -1,
-        pos = full.indexOf(orig);
-      while (pos !== -1) {
-        if (best === -1 || (s0 >= 0 && Math.abs(pos - s0) < Math.abs(best - s0)))
-          best = pos;
-        pos = full.indexOf(orig, pos + 1);
-      }
-      if (best !== -1) return { s: best, e: best + orig.length };
-    }
-    if (s0 >= 0) {
-      const s = clamp(s0, 0, full.length);
-      const e = clamp(Math.max(s0, e0), s, full.length);
-      if (e > s) return { s, e };
-    }
-    return null;
-  };
-
+  // ===== 1) 서버 검사 결과 span =====
   const spans = [];
 
-  // 1) 검수 결과: 원문 구간만 하이라이트 + 클릭용 dataset
   (matches || []).forEach((r) => {
-    const pos = resolve(text, r);
-    if (!pos) return;
+    const s0 = Number(r?.startIndex);
+    const e0 = Number(r?.endIndex);
 
-    let { s, e } = pos;
-    s = clamp(s, 0, N);
-    e = clamp(e, s, N);
-    if (e - s <= 0 || e - s > 400) return;
+    if (!Number.isFinite(s0) || !Number.isFinite(e0)) return;
+    if (e0 <= s0) return;
 
-    const slice = text.slice(s, e);
-    const want = r?.original ? String(r.original) : slice;
+    const start = clamp(s0, 0, N);
+    const end = clamp(e0, 0, N);
+    if (end <= start) return;
 
-    // 공백/문장부호 차이 정도만 허용
-    const clean = (x) => norm(x.replace(/[^\p{L}\p{N}\s]/gu, ""));
-    if (clean(slice) !== clean(want)) return;
+    const reasons = Array.isArray(r?.reasons) ? r.reasons : [];
+    const legalList = Array.isArray(r?.legal_small_list)
+      ? r.legal_small_list
+      : r?.legal_small
+      ? [r.legal_small]
+      : [];
+    const suggestions = Array.isArray(r?.suggestions)
+      ? r.suggestions.slice(0, 3)
+      : [];
 
-    const title = [
-      r?.type ? `[${r.type}]` : "",
-      r?.reason_line || "",
-      r?.legal_small ? String(r.legal_small).replace(/<[^>]+>/g, "") : "",
-      ...(Array.isArray(r?.suggestions) ? r.suggestions.slice(0, 3) : []),
-    ]
-      .filter(Boolean)
-      .join(" / ");
+    const titleParts = [];
+    if (reasons.length) titleParts.push(reasons.join(" / "));
+    if (legalList.length) titleParts.push("관련 규정: " + legalList.join(", "));
+    if (suggestions.length)
+      titleParts.push("추천: " + suggestions.map(norm).join(" / "));
+    const tip = titleParts.join("\n");
+
+    const type = (r?.type || "").toLowerCase();
+    let cls = "";
+    if (type === "ai") cls = "ai-token";
+    else if (type === "policy-block") cls = "policy-block";
+    else if (type === "policy-warn") cls = "policy-warn";
+    else cls = "error-token";
 
     spans.push({
-      start: s,
-      end: e,
-      content: slice,
-      type: mapTokenType(r?.type),
-      title,
-      data: {
-        bef: r?.before || "",
-        aft: r?.after || "",
-        orig: r?.original || slice,
+      kind: "result",
+      priority: 1,          // 결과 span 최우선
+      start,
+      end,
+      cls,
+      attrs: {
+        "data-type": type || "error",
+        "data-severity": (r?.severity || "").toLowerCase() || "low",
+        "data-start": start,
+        "data-end": end,
+        "data-bef": r?.before ?? "",
+        "data-orig": r?.original ?? "",
+        "data-aft": r?.after ?? "",
+        "data-core":
+          Array.isArray(r?.core_terms || r?.coreTerms)
+            ? (r.core_terms || r.coreTerms).join("|")
+            : "",
+        title: tip,
       },
     });
   });
 
-  // 2) 키워드/단어찾기 — 중앙 화면에서는 렌더하지 않음
-  // (keywords || []).forEach((kw) => {
-  //   if (!kw) return;
-  //   const re = new RegExp(escapeRegExp(kw), "g"); let m;
-  //   while ((m = re.exec(text)) !== null) {
-  //     spans.push({
-  //       start: m.index,
-  //       end: m.index + kw.length,
-  //       content: text.slice(m.index, m.index + kw.length),
-  //       type: "keyword",
-  //       title: "키워드",
-  //       data: { bef: "", aft: "", orig: text.slice(m.index, m.index + kw.length) },
-  //     });
-  //   }
-  // });
+  const overlaps = (a, b) => !(a.end <= b.start || b.end <= a.start);
+  const hasOverlap = (list, s, e) =>
+    list.some((sp) => !(sp.end <= s || e <= sp.start));
 
-  // (terms || []).forEach((t) => {
-  //   if (!t) return;
-  //   const re = new RegExp(escapeRegExp(t), "g"); let m;
-  //   while ((m = re.exec(text)) !== null) {
-  //     spans.push({
-  //       start: m.index,
-  //       end: m.index + t.length,
-  //       content: text.slice(m.index, m.index + t.length),
-  //       type: "term",
-  //       title: "단어찾기",
-  //       data: { bef: "", aft: "", orig: text.slice(m.index, m.index + t.length) },
-  //     });
-  //   }
-  // });
+  // ===== 2) 키워드 / 단어찾기 span (중앙 화면에서는 사용 안 함) =====
+  // 중앙 검사 화면은 서버 검사 결과(맞춤법/심의/필수가이드)만 하이라이트합니다.
+  // 키워드/단어찾기 하이라이트는 PDF 및 하단 통계에서만 사용합니다.
 
-  // 3) 겹침 제거
-  spans.sort((a, b) => a.start - b.start || a.end - b.end);
-  const nonOverlap = [];
-  let lastEnd = -1;
-  for (const s of spans) if (s.start >= lastEnd) {
-    nonOverlap.push(s);
-    lastEnd = s.end;
+
+  // ===== 3) 시작 위치 + 우선순위 순으로 정렬 =====
+  spans.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    return a.priority - b.priority;
+  });
+
+  // ===== 4) HTML 생성 — 원문 순서 그대로 =====
+  let html = "";
+  let cur = 0;
+
+  spans.forEach((sp) => {
+    if (sp.start > cur) {
+      html += renderSeg(text.slice(cur, sp.start));
+    }
+    const seg = renderSeg(text.slice(sp.start, sp.end));
+
+    const attrStr = Object.entries(sp.attrs)
+      .filter(([, v]) => v !== undefined && v !== null && v !== "")
+      .map(([k, v]) => ` ${k}="${escAttr(v)}"`)
+      .join("");
+
+    html += `<span class="${sp.cls}"${attrStr}>${seg}</span>`;
+    cur = sp.end;
+  });
+
+  if (cur < N) {
+    html += renderSeg(text.slice(cur));
   }
 
-  // 4) 원문 재조립 (dataset 포함)
-  let html = "",
-    cur = 0;
-  for (const s of nonOverlap) {
-    html += esc(text.slice(cur, s.start));
-    const body = esc(s.content);
-    const common =
-      `title="${escAttr(s.title || "")}" ` +
-      `data-start="${s.start}" data-end="${s.end}" ` +
-      `data-bef="${escAttr(s.data?.bef || "")}" ` +
-      `data-aft="${escAttr(s.data?.aft || "")}" ` +
-      `data-orig="${escAttr(s.data?.orig || s.content)}"`;
-
-    if (s.type === "error")
-      html += `<span class="error-token"${common}>${body}</span>`;
-    else if (s.type === "ai")
-      html += `<span class="ai-token"${common}>${body}</span>`;
-    else if (s.type === "policy-block")
-      html += `<span class="policy-block"${common}>${body}</span>`;
-    else if (s.type === "policy-warn")
-      html += `<span class="policy-warn"${common}>${body}</span>`;
-    else if (s.type === "keyword")
-      html += `<span class="keyword-token"${common}>${body}</span>`;
-    else html += `<span class="term-token"${common}>${body}</span>`;
-
-    cur = s.end;
-  }
-  html += esc(text.slice(cur));
   return html;
 };
+
+
+// === 필수가이드 검사 ===
+// 이제 "유사도 점수"는 쓰지 않고,
+// 서버에서 내려주는 paragraph_candidates(핵심단어 2개 이상 + 윈도우)만 사용해서
+// "가능성 있음" 구간만 표시한다.
+async function runRequiredCheck() {
+  // 1) 필수가이드 목록 정리
+  const guideList = (requiredText || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (!guideList.length) {
+    alert("필수가이드를 한 줄 이상 입력해주세요.");
+    return;
+  }
+  if (!text || !text.trim()) {
+    alert("검사할 원고가 비어 있습니다.");
+    return;
+  }
+
+  try {
+    // 원문 줄번호 계산용(보고서, 라벨에 공통 사용)
+    const srcText = (text || "").replace(/\r\n/g, "\n");
+
+    const buildLineIndex = (s) => {
+      const idxs = [0];
+      for (let i = 0; i < s.length; i++) if (s[i] === "\n") idxs.push(i + 1);
+      return idxs;
+    };
+    const lineNoFromIndex = (idxs, pos) => {
+      let lo = 0, hi = idxs.length - 1, ans = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (idxs[mid] <= pos) {
+          ans = mid + 1;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return ans;
+    };
+    const L = buildLineIndex(srcText);
+
+    // 2) 서버 호출: /guide_verify_local
+    //  - threshold는 서버 내부용(있어도 되고, 안 써도 됨)
+    //  - window_size: 80자 근처
+    //  - min_core_hits: 핵심단어 2개 이상인 구간만 후보로
+    const { data } = await axios.post(`${API_BASE}/guide_verify_local`, {
+      text,
+      required_guides: guideList,
+      threshold: 0.85,
+      window_size: 80,
+      min_core_hits: 2,
+    });
+
+    const payload = data || {};
+    const candidatesRaw = Array.isArray(payload.paragraph_candidates)
+      ? payload.paragraph_candidates
+      : [];
+
+    // 3) 템플릿별로 가장 좋은 후보 하나씩만 뽑기
+    //    - core_hits(핵심단어 개수) 우선
+    //    - 동률이면 best_score(있다면) 큰 쪽
+    const byTemplateKey = new Map();
+    for (const c of candidatesRaw) {
+      if (!c) continue;
+      const tpl = (c.template || "").trim();
+      const key =
+        tpl ||
+        `#${typeof c.template_index === "number" ? c.template_index : c.template_index || ""}`;
+
+      const prev = byTemplateKey.get(key);
+      if (!prev) {
+        byTemplateKey.set(key, c);
+      } else {
+        const prevHits = Number(prev.core_hits || 0);
+        const curHits = Number(c.core_hits || 0);
+        if (curHits > prevHits) {
+          byTemplateKey.set(key, c);
+        } else if (curHits === prevHits) {
+          const prevScore = Number(prev.best_score || 0);
+          const curScore = Number(c.best_score || 0);
+          if (curScore > prevScore) byTemplateKey.set(key, c);
+        }
+      }
+    }
+
+    // 4) 필수가이드 한 줄씩 돌면서:
+    //    - 후보가 있으면 "필수가이드(가능성)" + 위치/줄번호 + 핵심단어 리스트
+    //    - 없으면 "필수가이드(없음)" 으로만 기록
+    const out = [];
+
+    for (let i = 0; i < guideList.length; i++) {
+      const tpl = guideList[i];
+      const key1 = tpl.trim();
+
+      // 우선 텍스트 키로 찾고, 없으면 template_index로 보조 검색
+      let cand = byTemplateKey.get(key1);
+      if (!cand) {
+        cand = candidatesRaw.find(
+          (c) => Number(c.template_index || 0) === i + 1
+        );
+      }
+
+      if (cand) {
+        const start = Number(cand.start ?? cand.startIndex ?? 0) || 0;
+        const end =
+          Number(cand.end ?? cand.endIndex ?? start + (tpl.length || 1)) || 0;
+        const line = lineNoFromIndex(L, start);
+
+        const coreTerms = Array.isArray(cand.core_terms)
+          ? cand.core_terms
+          : [];
+        const coreHits =
+          Number(cand.core_hits) || coreTerms.length || 0;
+
+        const termsLabel = coreTerms.length
+          ? coreTerms.join(", ")
+          : "핵심 단어";
+
+        out.push({
+          type: "필수가이드(가능성)",
+          original: tpl,
+          startIndex: start,
+          endIndex: end,
+          line,
+          found: true,
+          reason_line: `해당 문단에 필수가이드와 관련된 ${termsLabel} 등이 함께 포함되어 있습니다. (단어 ${coreHits}개 이상 조합)`,
+          severity: "medium",
+        });
+      } else {
+        // 후보 구간이 전혀 없으면 "없음"으로만 남김
+        out.push({
+          type: "필수가이드(없음)",
+          original: tpl,
+          startIndex: 0,
+          endIndex: 0,
+          line: null,
+          found: false,
+          reason_line:
+            "원고에서 해당 필수가이드의 핵심 단어가 2개 이상 동시에 포함된 구간을 찾지 못했습니다.",
+          severity: "high",
+        });
+      }
+    }
+
+    // 5) 상태/하이라이트 갱신
+    setRequiredResults(out);
+
+    const merged = [
+      ...(Array.isArray(resultsVerify) ? resultsVerify : []),
+      ...(Array.isArray(resultsPolicy) ? resultsPolicy : []),
+      ...out,
+    ];
+    setResults(merged); // useEffect에서 하이라이트 자동 재생성
+
+    // 6) 현재 파일 캐시에 저장 (파일 모드일 때만)
+    if (files && fileIndex >= 0 && files[fileIndex]) {
+      const curFile = files[fileIndex];
+      setFileResults((prev) => ({
+        ...prev,
+        [curFile.name]: {
+          ...(prev[curFile.name] || {}),
+          required: out,
+        },
+      }));
+    }
+
+    alert(
+      "필수가이드 검사 결과가 갱신되었습니다.\n- '가능성 있음' 구간만 표시되며,\n- PDF 보고서의 필수가이드 섹션에도 동일하게 반영됩니다."
+    );
+  } catch (err) {
+    console.error(err);
+    alert("필수가이드 검사 중 오류가 발생했습니다.");
+  }
+}
 
 // ⬇️ 이 함수 전체를 교체
 const handleCheck = async () => {
@@ -1303,19 +1537,25 @@ const handleCheck = async () => {
     setHighlightedHTML(highlighted);
     setAiSummary(payload.aiSummary || null);
 
-    // 🔴 파일별 캐시에 분리 저장
-    if (fname) {
-      setFileResults((prev) => ({
-        ...prev,
-        [fname]: {
-          text,
-          verify: data,
-          policy: prev[fname]?.policy || [],
-          highlightedHTML: highlighted,
-          aiSummary: payload.aiSummary || null,
-        },
-      }));
-    }
+  // 🔴 파일별 캐시에 분리 저장 (필수가이드 + 중복문장까지 저장)
+  if (fname) {
+    setFileResults((prev) => ({
+      ...prev,
+      [fname]: {
+        text,
+        verify: data,
+        policy: prev[fname]?.policy || [],
+        required: requiredResults,              // ⭐ 필수가이드
+        intraExactGroups,                       // ⭐ 한 문서 내 중복
+        intraSimilarPairs,
+        interExactGroups: prev[fname]?.interExactGroups || [],
+        interSimilarPairs: prev[fname]?.interSimilarPairs || [],
+        interSimilarGroups: prev[fname]?.interSimilarGroups || [],
+        highlightedHTML: highlighted,
+        aiSummary: payload.aiSummary || null,
+      },
+    }));
+  }
   } catch (e) {
   try { navigator.sendBeacon?.(`${API_BASE}/log/client_error`, JSON.stringify({ where:"handleCheck", msg: String(e?.message||e), time: Date.now() })); } catch {}
   alert("검사 실패: " + (e?.message || "Unknown error"));
@@ -1425,6 +1665,102 @@ const handleBatchCheck = async () => {
         parsedTerms
       );
 
+// === [ADD] 필수가이드 검사 (배치용, textContent 기준, /guide_verify_local 사용) ===
+let reqList = [];
+let mergedPlusRequired = merged;
+let highlighted2 = highlighted;
+
+try {
+  const guideList = (requiredText || "")
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (guideList.length) {
+    const src = (textContent || "").replace(/\r\n/g, "\n");
+
+    const buildLineIndex = (s) => {
+      const idxs = [0];
+      for (let i = 0; i < s.length; i++) if (s[i] === "\n") idxs.push(i + 1);
+      return idxs;
+    };
+    const lineNoFromIndex = (idxs, pos) => {
+      let lo = 0, hi = idxs.length - 1, ans = 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (idxs[mid] <= pos) { ans = mid + 1; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      return ans;
+    };
+    const L = buildLineIndex(src);
+
+    const gRes = await axios.post(`${API_BASE}/guide_verify_local`, {
+      text: textContent,
+      templates: guideList,
+      threshold: 0.85,
+      window_lo: 0.7,
+      window_hi: 1.4,
+    });
+
+    const gItems = Array.isArray(gRes.data?.results) ? gRes.data.results : [];
+
+    reqList = gItems.map((r) => {
+      const tpl = r?.template || "";
+      const matches = Array.isArray(r?.matches) ? r.matches : [];
+      const best = matches[0];
+
+      if (r?.present && best && Number.isFinite(best.start) && Number.isFinite(best.end) && best.end > best.start) {
+        const start = best.start;
+        const end = best.end;
+        return {
+          type: "필수가이드(가능성 높음)",
+          original: tpl,
+          startIndex: start,
+          endIndex: end,
+          line: lineNoFromIndex(L, start),
+          found: true,
+          reason_line: r.message || `유사도 ${(best.score * 100).toFixed(1)}%`,
+          severity: "low",
+          score: best.score,
+          sem_score: best.sem_score,
+        };
+      }
+      return {
+        type: "필수가이드(가능성 낮음)",
+        original: tpl,
+        startIndex: 0,
+        endIndex: 0,
+        line: null,
+        found: false,
+        reason_line: r?.message || "원고에 없음",
+        severity: "high",
+      };
+    });
+
+    const reqForHighlight = reqList.filter(
+      (r) => r.found && Number.isFinite(r.startIndex) && r.endIndex > r.startIndex
+    );
+
+    mergedPlusRequired = mergeResultsPositionAware([...merged, ...reqList]);
+    highlighted2 = generateHighlightedHTML(
+      textContent,
+      [...merged, ...reqForHighlight],
+      parsedKeywords,
+      parsedTerms
+    );
+  } else {
+    // 필수가이드 미입력 시 기존 값 유지
+    mergedPlusRequired = merged;
+    highlighted2 = highlighted;
+  }
+} catch (e) {
+  console.error("배치 필수가이드 검사 실패:", e?.message || e);
+  // 실패해도 verify/policy 결과는 그대로 사용
+  mergedPlusRequired = merged;
+  highlighted2 = highlighted;
+}
+
       // 4) 🔴 파일별 캐시에 분리 저장
       setFileResults((prev) => ({
         ...prev,
@@ -1432,20 +1768,23 @@ const handleBatchCheck = async () => {
           text: textContent,
           verify: dataVerify,
           policy: dataPolicy,
-          highlightedHTML: highlighted,
+          highlightedHTML: highlighted2,
           aiSummary: aiSum,
+          required: reqList,
         },
       }));
 
       // 5) 현재 화면에 떠 있는 파일이면 즉시 반영
       if (i === fileIndex) {
-        setText(textContent);
+        setText(normalizeForIndexing(textContent)); // ⬅️ 통일
         setResultsVerify(dataVerify);
         setResultsPolicy(dataPolicy);
-        setResults(merged);
-        setHighlightedHTML(highlighted);
+        setResults(mergedPlusRequired);
+        setHighlightedHTML(highlighted2);
         setAiSummary(aiSum);
+        setRequiredResults(reqList);
       }
+
       } catch (e) {
        console.error(`파일 ${f.name} 검사 실패:`, e?.message || e);
   }
@@ -1454,6 +1793,8 @@ const handleBatchCheck = async () => {
   setIsChecking(false);
   alert("전체 검사 완료");
 };
+
+
 
 // 텍스트/결과/키워드/단어찾기 변경 시 하이라이트 즉시 반영
 useEffect(() => {
@@ -1494,35 +1835,118 @@ useEffect(() => {
   el.appendChild(document.createTextNode(css));
   document.head.appendChild(el);
 }, []);
+
+// === [REPLACE] 로그인/게스트 UI에서 약관/개인정보 링크 숨김 (로그인 화면만 예외) ===
+useEffect(() => {
+  // 👉 token도 없고 guestMode도 아니면 "순수 로그인 화면" 이라서 그대로 노출
+  //    (글핏 첫 로그인 페이지, 로그인 게이트 화면)
+  if (!token && !guestMode) return;
+
+  const HIDE_STYLE_ID = "glefit-hide-legal-on-ui";
+  let styleEl = document.getElementById(HIDE_STYLE_ID);
+  if (!styleEl) {
+    styleEl = document.createElement("style");
+    styleEl.id = HIDE_STYLE_ID;
+    document.head.appendChild(styleEl);
+  }
+  // href에 terms / privacy가 '포함'된 모든 앵커 숨김 + 필수가이드 구역 내 앵커도 보정
+  styleEl.textContent = `
+    a[href*="terms"] , a[href*="privacy"] { display: none !important; }
+    .required-guide a { display: none !important; }
+  `;
+
+  const hideAll = () => {
+    document
+      .querySelectorAll(
+        'a[href*="terms"], a[href*="privacy"], .required-guide a'
+      )
+      .forEach((a) => {
+        a.style.display = "none";
+      });
+  };
+  hideAll();
+  const mo = new MutationObserver(hideAll);
+  mo.observe(document.body, { childList: true, subtree: true });
+
+  return () => mo.disconnect();
+}, [token, guestMode]);
+
+
 // ========= 커서 이동(정확 탐색 + 중앙 정렬) =========
-function resolveSelection(full, start, end, original, before, after) {
+// ⬇ 핵심단어 기반 확장 + 줄 경계 확장 추가
+function resolveSelection(full, start, end, original, before, after, opts = {}) {
   const orig = original || "";
   const bef = before || "";
   const aft = after || "";
+  const coreTerms = Array.isArray(opts.coreTerms) ? opts.coreTerms : [];
 
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+  // 줄 경계(문단)로 확장
+  const expandToLine = (s, e) => {
+    const L = full.length;
+    let ls = s, le = e;
+    while (ls > 0 && full[ls - 1] !== "\n") ls--;
+    while (le < L && full[le] !== "\n") le++;
+    return { s: clamp(ls, 0, L), e: clamp(le, 0, L) };
+  };
+
+  // 1) coreTerms가 있으면: 각 핵심단어를 공백무시 정규식으로 찾아 범위를 합집합
+  if (coreTerms.length) {
+    let minS = Number.POSITIVE_INFINITY;
+    let maxE = -1;
+
+    // 탐색 창(있으면 start/end 주변, 없으면 전체)
+    const W = 160; // 핵심단어 조합 기준 윈도우
+    const winS = clamp((Number.isFinite(start) ? start : 0) - W, 0, full.length);
+    const winE = clamp((Number.isFinite(end) ? end : full.length) + W, 0, full.length);
+    const scope = full.slice(winS, Math.max(winS, winE));
+
+    coreTerms.forEach((t) => {
+      const term = (t || "").trim();
+      if (!term) return;
+      const re = buildLooseRegex(term);  // ← 이미 파일에 있음
+      let m;
+      while ((m = re.exec(scope)) !== null) {
+        const s0 = winS + m.index;
+        const e0 = s0 + (m[0] || "").length;  // 원문 구간 그대로
+        if (e0 > s0) {
+          if (s0 < minS) minS = s0;
+          if (e0 > maxE) maxE = e0;
+        }
+        if (re.lastIndex === m.index) re.lastIndex++;
+      }
+    });
+
+    if (Number.isFinite(minS) && maxE > minS) {
+      // 문단 경계까지 살짝 확장
+      return expandToLine(minS, maxE);
+    }
+  }
+
+  // 2) 문맥(bef/aft) 우선
   if (bef && aft) {
     const idx = full.indexOf(bef + orig + aft);
     if (idx >= 0) {
       const s = idx + bef.length;
-      return { s, e: s + orig.length };
+      return expandToLine(s, s + orig.length);
     }
   }
-
   if (bef) {
     const idx = full.indexOf(bef + orig);
     if (idx >= 0) {
       const s = idx + bef.length;
-      return { s, e: s + orig.length };
+      return expandToLine(s, s + orig.length);
     }
   }
-
   if (aft) {
     const idx = full.indexOf(orig + aft);
     if (idx >= 0) {
-      return { s: idx, e: idx + orig.length };
+      return expandToLine(idx, idx + orig.length);
     }
   }
 
+  // 3) original 근접치 탐색
   if (orig) {
     let nearest = -1;
     let pos = full.indexOf(orig, 0);
@@ -1533,35 +1957,98 @@ function resolveSelection(full, start, end, original, before, after) {
       pos = full.indexOf(orig, pos + 1);
     }
     if (nearest !== -1) {
-      return { s: nearest, e: nearest + orig.length };
+      return expandToLine(nearest, nearest + orig.length);
     }
   }
 
-  return {
-    s: Math.max(0, Math.min(start, full.length)),
-    e: Math.max(0, Math.min(end, full.length)),
-  };
+  // 4) 최후 보정(기존과 동일)
+  const s = clamp(Number.isFinite(start) ? start : 0, 0, full.length);
+  const e = clamp(Number.isFinite(end) ? end : s, s, full.length);
+  return expandToLine(s, e);
 }
 
-function moveCursorAccurate(start, end, before, after, original = "") {
+function getCaretClientRect(textarea, index) {
+  const ta = textarea;
+  const cs = window.getComputedStyle(ta);
+
+  const mirror = document.createElement("div");
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordWrap = "break-word";
+  [
+    "boxSizing","width","paddingTop","paddingRight","paddingBottom","paddingLeft",
+    "borderTopWidth","borderRightWidth","borderBottomWidth","borderLeftWidth",
+    "fontFamily","fontSize","fontWeight","fontStyle","letterSpacing","lineHeight",
+    "textIndent","textTransform","textAlign","direction","tabSize","wordSpacing"
+  ].forEach(k => mirror.style[k] = cs[k]);
+
+  const value = ta.value || "";
+  const before = document.createTextNode(value.slice(0, index));
+  const caretSpan = document.createElement("span");
+  const after = document.createTextNode(value.slice(index));
+  mirror.appendChild(before);
+  mirror.appendChild(caretSpan);
+  mirror.appendChild(after);
+
+  document.body.appendChild(mirror);
+  const r = caretSpan.getBoundingClientRect();
+  const base = mirror.getBoundingClientRect();
+  document.body.removeChild(mirror);
+
+  return { top: r.top - base.top, height: r.height };
+}
+
+function lfToCrlfIndex(posLF, raw) {
+  // raw = textarea.value (CRLF 포함 문자열)
+  // posLF = LF 기준 인덱스
+  let visible = 0;
+  for (let i = 0; i < raw.length; i++) {
+    if (raw[i] !== "\r") {
+      if (visible === posLF) return i;
+      visible++;
+    }
+  }
+  return raw.length;
+}
+
+// 핵심단어를 함께 전달해 단어조합 기준으로 범위를 확장
+function moveCursorAccurate(start, end) {
   const textarea = textareaRef.current;
   if (!textarea) return;
 
   const full = textarea.value || "";
-  const { s, e } = resolveSelection(full, start, end, original, before, after);
+  const N = full.length;
 
+  // 1) 서버에서 준 인덱스를 그대로 클램프만 해서 사용
+  let s = Number.isFinite(start) ? start : 0;
+  let e = Number.isFinite(end) ? end : s;
+
+  if (s < 0) s = 0;
+  if (s > N) s = N;
+  if (e < s) e = s;
+  if (e > N) e = N;
+
+  // 2) 커서/드래그 설정
   textarea.focus();
   textarea.setSelectionRange(s, e);
 
-  setTimeout(() => {
-    const lineHeight = 24;
-    const linesAbove = full.slice(0, s).split("\n").length - 1;
-    const idealTop = Math.max(
-      0,
-      linesAbove * lineHeight - textarea.clientHeight / 2
-    );
-    textarea.scrollTop = idealTop;
-  }, 0);
+  // 3) 선택 지점을 화면 위쪽 근처로 스크롤
+  requestAnimationFrame(() => {
+    try {
+      const caret = getCaretClientRect(textarea, s);
+      const topInScroll = caret.top + textarea.scrollTop;
+      const offset = 80; // 화면 위에서 약간 아래로
+      textarea.scrollTo({
+        top: Math.max(0, topInScroll - offset),
+        behavior: "smooth",
+      });
+    } catch {
+      // mirror 계산 실패할 때 대략적인 위치
+      const approx = Math.max(0, Math.floor(s / 60) * 22 - 60);
+      textarea.scrollTo({ top: approx, behavior: "smooth" });
+    }
+  });
 }
 
 // ========= 저장 =========
@@ -2266,6 +2753,66 @@ const opt = {
   jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
 };
 
+// === [ADD] 필수가이드 결과 섹션 — 줄번호/색상표기 ===
+(function addRequiredGuideSection(rootEl) {
+  const list = Array.isArray(requiredResults) ? requiredResults : [];
+  if (!list.length) return;
+
+  const srcText = (text || "").replace(/\r\n/g, "\n");
+  const buildLineIndex = (s) => { const idxs=[0]; for (let i=0;i<s.length;i++) if (s[i]==="\n") idxs.push(i+1); return idxs; };
+  const lineNoFromIndex = (idxs, pos) => { let lo=0,hi=idxs.length-1,ans=1; while(lo<=hi){const mid=(lo+hi)>>1; if (idxs[mid] <= pos){ans=mid+1; lo=mid+1;} else hi=mid-1;} return ans; };
+  const L = buildLineIndex(srcText);
+  const esc = (s="") => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const mkCtx = (start, end) => {
+    if (!(start>=0 && end>start)) return "-";
+    const ctxStart = Math.max(0, start - 30);
+    const ctxEnd   = Math.min(srcText.length, end + 30);
+    const before = esc(srcText.slice(ctxStart, start));
+    const middle = esc(srcText.slice(start, end));
+    const after  = esc(srcText.slice(end, ctxEnd));
+    return `${before}<mark>${middle}</mark>${after}`;
+  };
+
+  const sec = document.createElement("div");
+  sec.className = "rp-section";
+  sec.innerHTML = `
+    <h2 style="margin:16px 0 8px;">필수가이드 점검 결과</h2>
+    <div style="font-size:13px;color:#666;margin-bottom:8px;">
+      작성자가 입력한 필수가이드 문구의 포함 여부를 표시합니다.
+      <span style="color:#16a34a;font-weight:600">● 있음</span> /
+      <span style="color:#dc2626;font-weight:600">● 없음</span>
+    </div>
+    <table class="rp-table">
+      <thead>
+        <tr>
+          <th style="width:10%">상태</th>
+          <th>문구</th>
+          <th style="width:12%">줄번호</th>
+          <th style="width:28%">문맥</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  `;
+  const tbody = sec.querySelector("tbody");
+
+  (list || []).forEach(r => {
+    const found = !!r?.found;
+    const s = Number(r?.startIndex)||0, e = Number(r?.endIndex)||0;
+    const ln = found ? (r?.line ?? lineNoFromIndex(L, s)) : "-";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td style="font-weight:700; color:${found ? '#16a34a' : '#dc2626'}">${found ? "있음" : "없음"}</td>
+      <td>${esc(r?.original || "")}</td>
+      <td>${ln}</td>
+      <td>${found ? mkCtx(s,e) : "-"}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  rootEl.appendChild(sec);
+})(root);
+
 await window.html2pdf().set(opt).from(root).save();
 document.body.removeChild(holder);
 } catch (e) {
@@ -2329,12 +2876,31 @@ const handleDedupPDFBoth = async () => {
 
     const simWithLines = (payload.similar_pairs || []).map(p => ({
       ...p,
-      a: { ...(p.a || {}), line: lineNoFromIndex(idxs, Number(p?.a?.start) || 0) },
-      b: { ...(p.b || {}), line: lineNoFromIndex(idxs, Number(p?.b?.start) || 0) },
+      a: {
+        ...p.a,
+        line: lineNoFromIndex(idxs, Number(p.a?.start) || 0),
+      },
+      b: {
+        ...p.b,
+        line: lineNoFromIndex(idxs, Number(p.b?.start) || 0),
+      },
     }));
 
     setIntraExactGroups(exactWithLines);
     setIntraSimilarPairs(simWithLines);
+
+    // 🔹 현재 파일 캐시에 저장 (파일 모드일 때만)
+    if (files && fileIndex >= 0 && files[fileIndex]) {
+      const curFile = files[fileIndex];
+      setFileResults((prev) => ({
+        ...prev,
+        [curFile.name]: {
+          ...(prev[curFile.name] || {}),
+          intraExactGroups: exactWithLines,
+          intraSimilarPairs: simWithLines,
+        },
+      }));
+    }
 
     if (!payload.exact_groups?.length && !payload.similar_pairs?.length) {
       alert("이 문서 내 중복문장·유사 문장이 발견되지 않았습니다.");
@@ -2647,6 +3213,9 @@ document.body.removeChild(holder);
 
 // ========= (NEW) 여러 문서 간 중복문장/유사 =========
 const handleInterDedup = async () => {
+  // 이미 검사 중이면 중복 클릭 무시
+  if (isInterChecking) return;
+
   const localCompute = async (arr, lineIdxMap) => {
     const MIN = Number(interMinLen) || 6;
     const TH  = Number(interSimTh) || 0.88;
@@ -2747,7 +3316,13 @@ const handleInterDedup = async () => {
   };
 
   try {
-    if (!files.length) return alert("업로드된 파일이 없습니다.");
+    if (!files.length) {
+      alert("업로드된 파일이 없습니다.");
+      return;
+    }
+
+    // 여기서부터 실제 검사 시작 → 버튼을 '검사중…' 상태로
+    setIsInterChecking(true);
 
     // API로 보낼 원문들 확보
     const arr = await getAllFilesText();
@@ -2825,6 +3400,9 @@ const handleInterDedup = async () => {
       console.error(ee);
       alert("교차 중복 탐지 실패: " + (ee?.message || "Unknown error"));
     }
+  } finally {
+    // 어떤 경우든 검사 상태 해제
+    setIsInterChecking(false);
   }
 };
 
@@ -3183,7 +3761,7 @@ const jumpToFileOffset = async (targetFileName, start, end, original = "", befor
     // 파일 전환 후 이동
     setFileIndex(idx);
     const t = fileResults[targetFileName]?.text ?? (await extractFileText(files[idx]));
-    setText(t);
+    setText((t || "").replace(/\r\n/g, "\n"));
 
     // 캐시 없으면 기본 세팅
     if (!fileResults[targetFileName]) {
@@ -4131,7 +4709,19 @@ return (
               <div style={{ fontSize: 13, marginBottom: 4 }}>키워드 입력 (파일 교체 자동 세팅)</div>
               <textarea
                 value={keywordInput}
-                onChange={(e) => setKeywordInput(e.target.value)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setKeywordInput(value);
+
+                  // 🔹 현재 선택된 파일 이름 기준으로 map에 저장
+                 const curFile = files[fileIndex];
+                 if (curFile) {
+                    setKeywordByFile((prev) => ({
+                      ...(prev || {}),
+                      [curFile.name]: value,
+                    }));
+                  }
+                }}
                 style={{ width: "100%", height: 56, padding: 8 }}
                 placeholder="파일명 그대로 사용하거나, 쉼표로 다중 입력"
               />
@@ -4146,7 +4736,7 @@ return (
 
             {/* 단어찾기 입력 */}
             <div>
-              <div style={{ fontSize: 13, marginBottom: 4 }}>단어찾기 (키워드와 분리)</div>
+              <div style={{ fontSize: 13, marginBottom: 4 }}>단어찾기 ( , 쉼표 구분)</div>
               <textarea
                 value={termInput}
                 onChange={(e) => setTermInput(e.target.value)}
@@ -4215,6 +4805,48 @@ return (
           }}
           dangerouslySetInnerHTML={{ __html: highlightedHTML }}
         />
+{/* === 필수가이드 입력(중앙 검사결과 아래) === */}
+<div style={{ marginTop: 20 }}>
+  <h4>📘 필수가이드 입력(핵심 단어 조합을 권장합니다)</h4>
+
+  {/* 안내문 + 예시 (링크 없음, 1세트만) */}
+  <div style={{ fontSize: 13, marginBottom: 8, color:"#475569", lineHeight: 1.6 }}>
+    📢 한 줄에 한 항목씩 입력. 특정구간 내 단어 2개 이상 포함 기준으로 검사.<br/>
+    <div style={{ color:"#64748b", marginTop: 6 }}>
+      <div>📢 필수항목 포함 여부를 보장하지 않습니다. 반드시 확인이 필요합니다.</div>
+      <div>📢 의미는 동일하지만 완전히 다른 단어와 문장일 경우 확인되지 않을 수 있습니다.</div>
+      <div>예시) 추천(핵심단어조합): 부작용 발생 전문가 상담</div>
+      <div>예시) 효과에는 개인차가 있습니다</div>
+    </div>
+  </div>
+
+  {/* 입력창 */}
+  <textarea
+    value={requiredText}
+    onChange={(e) => setRequiredText(e.target.value)}
+    style={{
+      width: "100%",
+      height: 80,
+      padding: 8,
+      borderRadius: 6,
+      border: "1px solid #d1d5db",
+      boxSizing: "border-box",   // 👉 이 줄 추가
+    }}
+    placeholder={
+      "예)\n효과에는 개인차가 있습니다\n부작용 발생 시 전문가와 상담하세요\n광고심의 인증번호: ..."
+    }
+  />
+
+  {/* 버튼/카운트 */}
+  <div style={{ marginTop: 8, display:"flex", gap:8, alignItems:"center" }}>
+    <button onClick={runRequiredCheck} title="필수가이드만 다시 검사">
+      필수가이드 검사
+    </button>
+    <span style={{ fontSize:12, color:"#64748b" }}>
+      현재 항목 수: <b>{(requiredText || "").split("\n").map(s=>s.trim()).filter(Boolean).length}</b>
+    </span>
+  </div>
+</div>
       </div>
 
       {/* 우측 컬럼: 추천항목(위) + 중복문장 탐지(아래, 바깥 박스) */}
@@ -4235,36 +4867,53 @@ return (
   <div style={{ maxHeight: 420, overflowY: "auto", marginBottom: 12 }}>
     {results.length === 0 && <p>검사 결과가 여기에 표시됩니다.</p>}
 
-    {mergeResultsPositionAware([...resultsVerify, ...resultsPolicy])
-      .filter(
-        (item) =>
-          !filterPolicyOnly ||
-          item.type === "심의위반" ||
-          item.type === "주의표현"
-      )
-      .map((item, idx) => {
-        const s = Number(item.startIndex) || 0;
-        const e =
-          Number(item.endIndex ?? (s + (item.original?.length || 0))) || s;
+    {(() => {
+      // 1) 기본 검사/심의 결과
+      const base = mergeResultsPositionAware([...resultsVerify, ...resultsPolicy]);
 
-        // ✅ 안정적 key (동일 문장 재정렬/토글 시 React가 잘못 재사용하지 않도록)
-        const stableKey = `${item.type || "t"}-${s}-${e}-${
-          (item.original || "").slice(0, 20)
-        }`;
+      // 2) 필수가이드 결과(있음/없음 모두 패널에 노출)
+      const reqItems = (requiredResults || []).map(r => ({
+        ...r,
+        // 패널 표기용 타입명
+        type: r.found ? "필수가이드(있음)" : "필수가이드(없음)",
+        // 클릭 이동 대비 인덱스 보정
+        startIndex: Number(r.startIndex) || 0,
+        endIndex: Number(r.endIndex) || Number(r.startIndex) || 0,
+        original: r.original || ""
+      }));
+
+      // 3) “심의 결과만 보기” 체크 시 필수가이드는 숨김
+      const rows = [...reqItems, ...base].filter(item =>
+        !filterPolicyOnly ||
+        item.type === "심의위반" || item.type === "주의표현"
+      );
+
+      return rows.map((item, idx) => {
+        const s = Number(item.startIndex) || 0;
+        const e = Number(item.endIndex ?? (s + (item.original?.length || 0))) || s;
+
+        // 안정적 key
+        const stableKey = `${item.type || "t"}-${s}-${e}-${(item.original || "").slice(0, 20)}`;
 
         return (
           <div
             key={stableKey}
-            onClick={() =>
-              moveCursorAccurate(
-                s,
-                e,
-                item.before || "",
-                item.after || "",
-                item.original || ""
-              )
-            }
-            // ✅ style 오브젝트를 실제 값으로 명시
+onClick={() => {
+  const base = normalizeForIndexing(textareaRef.current?.value || "");
+  const pos = resolveSelection(
+    base,
+    s, e,
+    item.original || "",
+    item.before || "",
+    item.after || ""
+  );
+  moveCursorAccurate(
+    pos.s, pos.e,
+    item.before || "",
+    item.after || "",
+    item.original || ""
+  );
+}}
             style={{
               background: "#fff",
               border: "1px solid #e5e7eb",
@@ -4280,9 +4929,9 @@ return (
 
             {!!(item.suggestions || []).length && (
               <ul style={{ margin: "6px 0 0 18px" }}>
-                {(item.suggestions || [])
-                  .slice(0, 3)
-                  .map((sug, i) => <li key={i}>{sug}</li>)}
+                {(item.suggestions || []).slice(0, 3).map((sug, i) => (
+                  <li key={i}>{sug}</li>
+                ))}
               </ul>
             )}
 
@@ -4306,7 +4955,8 @@ return (
             )}
           </div>
         );
-      })}
+      });
+    })()}
   </div>
 </div>
 
@@ -4507,7 +5157,12 @@ return (
       />
     </label>
 
-    <button onClick={handleInterDedup} disabled={!files.length}>탐지</button>
+    <button
+      onClick={!isInterChecking ? handleInterDedup : undefined}
+      disabled={!files.length || isInterChecking}
+    >
+      {isInterChecking ? "검사중…" : "탐지"}
+    </button>
   </div>
 
   {/* 저장 버튼들 */}
@@ -4571,21 +5226,12 @@ return (
             유사 그룹 {gi + 1} · 문장 수 {g.size} · 평균유사도 {g.avgScore} (최대 {g.maxScore})
           </div>
 
-          {g.representative && (
-            <div style={{ fontSize: 12, fontStyle: "italic", color: "#555", marginBottom: 6 }}>
-              대표: {g.representative}
+          {/* 대표문장 대신, 그룹에 포함된 실제 원문 문장들을 그대로 표시 */}
+          {(g.occurrences || []).map((o, oi) => (
+            <div key={oi} style={{ fontSize: 12, margin: "4px 0" }}>
+              • {o.file} #{o.line} — {o.original || o.text || ""}
             </div>
-          )}
-
-          {(g.items || g.pairs || []).map((p, pi) => {
-            const a = p?.a || {}, b = p?.b || {};
-            return (
-              <div key={pi} style={{ fontSize: 12, margin: "4px 0" }}>
-                <div>• {a.file} #{a.line} — {a.text}</div>
-                <div>  ↔ {b.file} #{b.line} — {b.text} (유사도 {p?.score ?? p?.sim ?? p?.similarity})</div>
-              </div>
-            );
-          })}
+          ))}
         </div>
       ))
     )}

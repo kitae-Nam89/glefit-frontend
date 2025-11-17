@@ -1,0 +1,155 @@
+pack: kr-guide
+version: 2025-11-06-final
+topics: [필수가이드, 광고검수, 문체검사, 품질검사]
+
+vars:
+  BRAND: ""            # 브랜드명
+  KEYWORDS: []         # 키워드 입력란과 병합됨
+  INTRO_TARGET: 100    # 서론 목표 글자수
+  INTRO_TOL: 20        # 허용 오차 (80~120자)
+  IMG_COUNT: 10        # 기본 이미지 단락 수
+  JOSA_LIST: [은, 는, 이, 가, 을, 를, 으로, 로, 에, 에서, 에게, 와, 과, 도, 만, 뿐, 의]
+  SYMBOL_BAN: ["!", "?", "~", "☆", "★", "※", "♡", "♥"]
+
+rules:
+
+  # ───────────── A. 포함/금칙/유사표현 ─────────────
+  - id: contains
+    type: contains
+    phrase: ""
+    note: "특정 문장 포함 필수 (캠페인별로 지정 가능)"
+    severity: medium
+
+  - id: forbid
+    type: forbid
+    phrase: ""
+    note: "특정 문장 금지 (캠페인별로 지정 가능)"
+    severity: high
+
+  - id: similar
+    type: similar
+    phrase: ""
+    threshold: 0.8
+    note: "유사 문장 포함 허용 (예: 의미 유사 0.8 이상)"
+    severity: medium
+
+  # ───────────── B. 횟수/범위 (자동 키워드 인식) ─────────────
+  - id: keyword-range
+    type: keyword_count
+    min: 2
+    max: 3
+    note: "‘키워드 2~3회’ 자동 인식"
+    severity: medium
+
+  - id: keyword-title-included
+    type: kw-total-eq
+    n: 6
+    note: "‘키워드 제목포함 6회’"
+    severity: medium
+
+  - id: keyword-body-only
+    type: kw-body-eq
+    n: 5
+    note: "‘키워드 제목미포함 5회’"
+    severity: medium
+
+  - id: keyword-title-body-combo
+    type: kw-title-body-combo
+    tOp: ">="
+    tNum: 1
+    bOp: ">="
+    bNum: 5
+    note: "‘키워드 (제목>=1회 / 본문>=5회)’ 복합 규칙"
+    severity: medium
+
+  # ───────────── C. 위치(단락) ─────────────
+  - id: keyword-first
+    type: first_paragraph
+    phrase: "키워드"
+    min: 1
+    note: "첫 단락에 키워드 1회 이상 포함"
+    severity: medium
+
+  - id: keyword-last
+    type: last_paragraph
+    phrase: "키워드"
+    min: 1
+    note: "마지막 단락에 키워드 1회 이상 포함"
+    severity: medium
+
+  # ───────────── D. 키워드 특수 규칙 ─────────────
+  - id: keyword-josa-ban
+    type: keyword_josa_forbid
+    particles: ${JOSA_LIST}
+    note: "키워드 뒤 조사 금지 (예: 좋은음식은 ❌)"
+    severity: medium
+
+  # ───────────── E. 근접·공동출현(상관 규칙) ─────────────
+  - id: near-sale
+    type: near
+    a: "${BRAND}"
+    b_regex: "(판매|구매|살 수 있다)"
+    dist: 25
+    note: "브랜드 근처 25자 내 판매 관련 문구 확인"
+    severity: medium
+
+  - id: cooccur-cure
+    type: cooccur
+    scope: title+body
+    a: "영양제"
+    b_regex: "(완치|치료|개선|증상에서 벗어났)"
+    mode: forbid
+    note: "영양제+치료 표현 동시 금지"
+    severity: high
+
+  # ───────────── F. 부호/이모지 금지 ─────────────
+  - id: forbid-symbols
+    type: forbid_symbols
+    symbols: ${SYMBOL_BAN}
+    note: "부호, 이모티콘, 특수문자 금지"
+    severity: low
+
+  # ───────────── G. 어투(문체) ─────────────
+  - id: tone-formal
+    type: tone
+    require: formal
+    forbid: casual
+    note: "‘입니다/합니다’체 사용, 요/죠/데요 금지"
+    severity: medium
+
+  - id: tone-casual
+    type: tone
+    require: casual
+    forbid: formal
+    note: "‘요/죠/데요’체 사용, 입니다/합니다 금지"
+    severity: medium
+
+  # ───────────── H. 이미지·단락 구조 ─────────────
+  - id: numbered-blocks
+    type: numbered_blocks
+    count: ${IMG_COUNT}
+    note: "‘이미지 10장’ 단락번호 1~10 확인"
+    severity: medium
+
+  # ───────────── I. 서론 글자 수 ─────────────
+  - id: intro-length
+    type: intro_length
+    target: ${INTRO_TARGET}
+    tolerance: ${INTRO_TOL}
+    note: "‘서론 100자 내외’ (사진 1 전 텍스트)"
+    severity: low
+
+  # ───────────── J. 품질 보조 ─────────────
+  - id: sentence-long
+    type: regex
+    pattern: "[^.?!]{200,}"
+    flags: "g"
+    note: "200자 이상 문장 경고"
+    severity: low
+
+  - id: passive-expression
+    type: regex
+    pattern: "되어있|되고있|되고 있"
+    flags: "g"
+    note: "수동 표현(되어있다 등) 경고"
+    severity: low

@@ -657,6 +657,106 @@ def spacing_agnostic_regex(kw: str) -> str:
     parts = list(kw)
     return r"\s*".join(map(re.escape, parts))
 
+# --- [ADD] 필수 키워드 위치 찾기(공백 무시 + 대소문자/전각 호환) ---
+def _looks_like_regex(kw: str) -> bool:
+    # (), [], {}, +, ?, *, |, . 같은 메타문자가 있을 때만 정규식으로 취급
+    return bool(re.search(r"[.^$*+?{}\[\]|()\\]", kw or ""))
+
+def _find_positions_ko(hay: str, kw: str):
+    hits = []
+    if not hay or not kw:
+        return hits
+
+    if _looks_like_regex(kw):
+        rx = re.compile(kw, re.IGNORECASE)
+    else:
+        # 일반 문자열 → 공백/기호 무시 패턴으로 변환
+        rx = re.compile(spacing_agnostic_regex(kr_norm(kw)), re.IGNORECASE)
+
+    for m in rx.finditer(hay):
+        hits.append({"start": m.start(), "end": m.end()})
+    return hits
+
+
+def _guide_keyword_windows(text: str, template: str,
+                           window_size: int = 80,
+                           min_core_hits: int = 2,
+                           max_terms: int = 5):
+    """
+    템플릿 문장에서 핵심 단어를 몇 개 뽑아서(core_terms),
+    원문에서 window_size 글자 안에 서로 다른 핵심 단어가
+    min_core_hits 개 이상 같이 등장하는 구간을 후보로 찾는다.
+
+    반환: [{start, end, sentence, score, core_hits, core_terms}, ...]
+    """
+    text = text or ""
+    template = (template or "").strip()
+    if not text or not template:
+        return []
+
+    window_size = max(30, int(window_size or 80))
+    min_core_hits = max(1, int(min_core_hits or 2))
+
+    # 템플릿에서 핵심 단어 추출 (이미 server.py 에 core_terms 함수 있음)
+    terms = core_terms(template, max_terms=max_terms)
+    if not terms:
+        return []
+
+    # 각 핵심 단어의 출현 위치 수집
+    hits = []
+    for t in terms:
+        for h in _find_positions_ko(text, t):
+            hits.append((h["start"], t))
+    if not hits:
+        return []
+
+    hits.sort(key=lambda x: x[0])
+
+    # 슬라이딩 윈도우로 "서로 다른 핵심어" 개수 세기
+    from collections import defaultdict
+    left = 0
+    counts = defaultdict(int)
+    distinct = set()
+    n = len(hits)
+    candidates = []
+    seen_spans = set()
+
+    for right in range(n):
+        pos_r, term_r = hits[right]
+        counts[term_r] += 1
+        distinct.add(term_r)
+
+        # 현재 윈도우 폭이 window_size 를 넘으면 왼쪽 줄이기
+        while left <= right and pos_r - hits[left][0] > window_size:
+            pos_l, term_l = hits[left]
+            counts[term_l] -= 1
+            if counts[term_l] <= 0:
+                distinct.discard(term_l)
+            left += 1
+
+        # 핵심어 종류가 min_core_hits 개 이상이면 후보
+        if len(distinct) >= min_core_hits:
+            start = hits[left][0]
+            end = min(start + window_size, len(text))
+            span = (start, end)
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
+            seg = text[start:end]
+            candidates.append({
+                "start": start,
+                "end": end,
+                "sentence": seg,
+                "score": float(len(distinct)),   # 점수 = 서로 다른 핵심어 개수
+                "core_hits": len(distinct),
+                "core_terms": sorted(distinct),
+            })
+
+    # 핵심어 개수(desc) → 길이 짧은 순 → 시작 위치 순
+    candidates.sort(key=lambda c: (-c["core_hits"], c["end"] - c["start"], c["start"]))
+    return candidates
+
+
 # ================== 심의 규칙 로딩/스캔 ==================
 def load_rules(path=RULE_PATH):
     global RULES, RULES_INDEX
@@ -886,9 +986,72 @@ def rule_scan(text):
         dedup.append(it)
     return dedup
 
+# === [ADD] 완곡 멘트 포맷터 =========================================
+def _hedged_message(kind: str, score=None, threshold=None):
+    """
+    kind: "present" | "borderline" | "absent" | "forbid"
+    일관된 톤 유지(단정 대신 완곡).
+    """
+    if kind == "forbid":
+        return "금지어로 분류된 표현이 포함되었을 가능성이 높습니다."
+    if kind == "present":
+        return "포함되었을 가능성이 높습니다."  # (유사도/키워드 충족)
+    if kind == "borderline":
+        return "유사하거나 일부 포함되어 확인이 필요합니다."
+    return "명확한 일치가 확인되기 어렵습니다."
+# ===================================================================
+
+# === [ADD] 금지어 파싱/검사 =========================================
+_FORBID_HEAD_RX = re.compile(r"^\s*금지어\s*[:\-]\s*(.+)$", re.IGNORECASE)
+
+def _parse_forbid_lines(lines):
+    """
+    lines: list[str]  (필수가이드 입력란의 각 줄)
+    지원 형태:
+      - "금지어: 단어1,단어2,단어3"
+      - "금지어- 단어1 단어2" (공백 구분도 허용)
+    반환: 금지어 리스트(list[str])
+    """
+    out = []
+    for ln in (lines or []):
+        m = _FORBID_HEAD_RX.match(ln or "")
+        if not m:
+            continue
+        payload = kr_norm(m.group(1))
+        # 쉼표 기준 1차 분리 → 없으면 공백 분리
+        if "," in payload:
+            toks = [t.strip() for t in payload.split(",")]
+        else:
+            toks = [t.strip() for t in re.split(r"\s+", payload)]
+        out.extend([t for t in toks if t])
+    # 중복 제거
+    uniq = []
+    seen = set()
+    for t in out:
+        if t not in seen:
+            uniq.append(t); seen.add(t)
+    return uniq
+
+def _find_forbidden_hits(text: str, forbid_terms: list[str]):
+    """
+    spacing-agnostic(글자 사이 임의 공백 허용) + 대소문자/전각 호환.
+    반환: [{"term":..., "start":..., "end":..., "seg":...}, ...]
+    """
+    text = text or ""
+    hits = []
+    for term in (forbid_terms or []):
+        rx = re.compile(spacing_agnostic_regex(term), re.IGNORECASE)
+        for m in rx.finditer(text):
+            s, e = m.start(), m.end()
+            hits.append({"term": term, "start": s, "end": e, "seg": text[s:e]})
+    return hits
+# ===================================================================
+
+
 # ============== (NEW) 도돌이표/유사문장 탐지 유틸 ==============
 _punc_rx = re.compile(r"[^\w\u3131-\u318E\uAC00-\uD7A3]+", re.UNICODE)
 _ws_rx = re.compile(r"\s+")
+
 
 def _norm_for_dup(s: str) -> str:
     s = unicodedata.normalize("NFKC", s or "")
@@ -897,30 +1060,246 @@ def _norm_for_dup(s: str) -> str:
     s = _ws_rx.sub(" ", s).strip()
     return s
 
-def _char_ngrams(s: str, n=3):
+
+def _char_ngrams(s: str, n: int = 3) -> set[str]:
+    """단일 길이 n 에 대한 문자 n-gram 집합"""
     s = _norm_for_dup(s)
-    return {s[i:i+n] for i in range(max(0, len(s)-n+1))} if s else set()
+    return {s[i:i + n] for i in range(max(0, len(s) - n + 1))} if s else set()
+
+
+def _char_ngrams_multi(s: str, lens=(2, 3, 4)) -> set[str]:
+    """
+    여러 길이 n(2,3,4 등)에 대한 문자 n-gram 집합을 한 번에 만든다.
+    guide_verify_local / 도돌이표·유사문장 탐지에서 템플릿 길이별 유사도 계산에 사용.
+    """
+    s = _norm_for_dup(s or "")
+    out: set[str] = set()
+    for n in lens:
+        if not isinstance(n, int) or n <= 0:
+            continue
+        L = len(s)
+        if L < n:
+            continue
+        for i in range(0, L - n + 1):
+            out.add(s[i:i + n])
+    return out
+
 
 def _jaccard(a: set, b: set) -> float:
-    if not a and not b: return 1.0
-    if not a or not b:  return 0.0
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
     inter = len(a & b)
     union = len(a | b)
     return inter / union if union else 0.0
 
-def _sentence_spans(text):
+
+def _sentence_spans(text: str):
     """문장 단위로 (start, end, raw_sentence) 반환"""
     sentences = basic_kr_sentence_split(text)
-    spans = []
+    spans: list[tuple[int, int, str]] = []
     cursor = 0
     for s in sentences:
         idx = text.find(s, cursor)
         if idx == -1:
             idx = text.find(s)
         if idx != -1:
-            spans.append((idx, idx+len(s), s))
+            spans.append((idx, idx + len(s), s))
             cursor = idx + len(s)
     return spans
+
+# === [ADD] 필수가이드(유사도) 유틸 ===================================
+def _best_matches_for_template(text: str, template: str, threshold: float = 0.88):
+    """
+    문장 단위로 템플릿과 3-gram 자카드 유사도 비교.
+    반환: dict(present, count, best_score, best_span, matches[...])
+    """
+    tgrams = _char_ngrams_multi(template or "", (2,3,4))
+    spans = _sentence_spans(text or "")
+    matches = []
+    best = None
+    for (s, e, sent) in spans:
+        score = _jaccard(tgrams, _char_ngrams_multi(sent, (2,3,4)))
+        if score >= max(threshold - 0.06, threshold):  # 문장 스캔은 살짝 느슨
+            rec = {"start": s, "end": e, "sentence": sent, "score": round(score, 3)}
+            matches.append(rec)
+            if (not best) or rec["score"] > best["score"]:
+                best = rec
+    matches.sort(key=lambda x: -x["score"])
+    return {
+        "present": len(matches) > 0,
+        "count": len(matches),
+        "best_score": (best or {}).get("score"),
+        "best_span": best,
+        "matches": matches[:10]
+    }
+
+def _scan_by_rolling_window(text, template, threshold, size_lo=0.6, size_hi=1.6):
+    T = template or ""
+    S = text or ""
+    # 유사도 전용 정규화로 비교(원문은 하이라이트용으로 그대로 유지)
+    Tn = _ko_sim_norm(T)
+    Sn = _ko_sim_norm(S)
+    if not Tn or not Sn:
+        return []
+    tpl_len = max(1, len(Tn))
+    min_len = max(8, int(tpl_len * size_lo))
+    max_len = max(min_len, int(tpl_len * size_hi))
+    tpl_grams = _char_ngrams_multi(Tn, (2,3,4))
+
+    hits = []
+    step1 = max(4, int(tpl_len * 0.20))  # 더 촘촘
+    step2 = max(4, int(tpl_len * 0.12))
+    n = len(Sn)
+    for i in range(0, n, step1):
+        for L in range(min_len, min(max_len, n - i) + 1, step2):
+            segN = Sn[i:i+L]
+            if not segN: continue
+            sc = _jaccard(tpl_grams, _char_ngrams_multi(segN, (2,3,4)))
+            if sc >= threshold:
+                # 원문 좌표로 근사 역매핑
+                # (정규화 전 원문 S에서 같은 범위를 사용)
+                raw = S[i:i+L]
+                hits.append({"start": i, "end": i+L, "sentence": raw, "score": round(sc, 3)})
+    # 상위 비중복 10개만 유지
+    hits.sort(key=lambda x: -x["score"])
+    keep, used = [], []
+    for h in hits:
+        if not any(not (h["end"] <= u["start"] or h["start"] >= u["end"]) for u in used):
+            keep.append(h); used.append(h)
+        if len(keep) >= 10: break
+    return keep
+
+# --- [ADD] 필수가이드 문단 후보 탐지 유틸 ---
+
+_PAR_BREAK_RX = re.compile(r"\n\s*\n+")
+
+def _paragraph_spans(text: str):
+    spans = []
+    if not text:
+        return spans
+    n = len(text)
+    last = 0
+    for m in _PAR_BREAK_RX.finditer(text):
+        s = last
+        e = m.start()
+        seg = text[s:e]
+        if seg.strip():
+            spans.append((s, e, seg))
+        last = m.end()
+    if last < n:
+        seg = text[last:]
+        if seg.strip():
+            spans.append((last, n, seg))
+    return spans
+
+
+def _extract_core_terms(tpl: str, max_terms: int = 5):
+    from string import digits
+    norm = kr_norm(tpl)
+    toks = tokenize(norm)
+    core = []
+    for t in toks:
+        if len(t) < 2:
+            continue
+        if all(ch in digits for ch in t):
+            continue
+        if t in core:
+            continue
+        core.append(t)
+        if len(core) >= max_terms:
+            break
+    return core
+
+
+def _guide_paragraph_candidates(
+    text: str,
+    templates: list[str],
+    need_terms: int = 2,
+    window_size: int = 80,
+    step: int = 40,
+):
+    """
+    필수가이드 템플릿별로, 원고에서 window_size 글자 안에
+    핵심 단어가 need_terms개 이상 같이 등장하는 구간을 후보로 잡는다.
+
+    - 문단/문장 경계 무시, 고정 길이 롤링 윈도우 기반
+    - 반환: {template: [ {start,end,hit_count,hit_terms,text}, ... ], ...}
+    """
+    text = text or ""
+    n = len(text)
+    result: dict[str, list[dict]] = {}
+    if n == 0 or not templates:
+        return result
+
+    # 너무 작은 값 방지
+    window_size = max(40, int(window_size or 80))
+    step = max(20, int(step or (window_size // 2)))
+
+    for tpl in templates:
+        core = _extract_core_terms(tpl)
+        if len(core) < need_terms:
+            # 핵심 단어가 너무 적으면 스킵
+            continue
+
+        cand_map: dict[tuple[int, int], dict] = {}
+
+        # 0 ~ 끝까지 window_size 글자 기준으로 슬라이딩
+        for start in range(0, n, step):
+            end = min(start + window_size, n)
+            seg = text[start:end]
+            if not seg.strip():
+                continue
+
+            hit_terms = []
+            for term in core:
+                if re.search(spacing_agnostic_regex(term), seg, flags=re.IGNORECASE):
+                    hit_terms.append(term)
+
+            if len(hit_terms) >= need_terms:
+                # 검수자가 보기 편하게, 같은 줄 기준으로 약간 확장
+                ctx_start = text.rfind("\n", 0, start)
+                if ctx_start == -1:
+                    ctx_start = start
+                else:
+                    ctx_start += 1  # 개행 바로 뒤부터
+
+                ctx_end = text.find("\n", end)
+                if ctx_end == -1:
+                    ctx_end = end
+
+                key = (ctx_start, ctx_end)
+                prev = cand_map.get(key)
+                if (not prev) or (len(hit_terms) > prev["hit_count"]):
+                    cand_map[key] = {
+                        "start": ctx_start,
+                        "end": ctx_end,
+                        "hit_count": len(hit_terms),
+                        "hit_terms": hit_terms,
+                        "text": text[ctx_start:ctx_end],
+                    }
+
+        if cand_map:
+            # hit_count 많은 순 + 위치순 정렬
+            result[tpl] = sorted(
+                cand_map.values(),
+                key=lambda x: (-x["hit_count"], x["start"]),
+            )
+
+    return result
+
+
+def _band_message(score: float, threshold: float) -> str:
+    if score >= max(threshold + 0.04, 0.92):
+        return "포함되었을 가능성이 높습니다."
+    if score >= threshold:
+        return "유사한 문구가 감지됩니다."
+    if score >= max(0.82, threshold - 0.06):
+        return "부분적으로 유사하여 확인이 필요합니다."
+    return "명확한 일치가 확인되기 어렵습니다."
+# ====================================================================
+
 
 def _dedup_intra(text, min_len=6, sim_threshold=0.85):
     spans = _sentence_spans(text)
@@ -1008,6 +1387,91 @@ def _dedup_inter(files, min_len=6, sim_threshold=0.85):
                 })
     return exact, sims
 
+# === [ADD] 필수내용(템플릿) 유사도: 중복엔진(_dedup_intra) 재사용 =========
+def _guide_match_by_dedup_engine(text: str, templates: list[str],
+                                 min_len: int = 6, sim_threshold: float = 0.85):
+    """
+    templates: 필수내용 라인들(빈 줄/주석 제외)
+    - 문장 단위 + 3-gram 자카드(중복엔진과 동일)로 스캔
+    - 결과는 템플릿별 best hit만 반환
+    """
+    spans = _sentence_spans(text or "")
+    # 텍스트 쪽 ngram 미리 계산 (속도)
+    sent_grams = []
+    for (s, e, raw) in spans:
+        n = _norm_for_dup(raw)
+        if len(n) >= min_len:
+            sent_grams.append((s, e, raw, _char_ngrams(raw, 3)))
+
+    out = []
+    for tpl in (templates or []):
+        tpl = (tpl or "").strip()
+        if not tpl: 
+            continue
+        tgrams = _char_ngrams(tpl, 3)  # 중복엔진과 동일 기준
+        best = None
+        for (s, e, raw, g) in sent_grams:
+            sc = _jaccard(tgrams, g)
+            if sc >= sim_threshold:
+                rec = {"start": s, "end": e, "sentence": raw, "score": round(sc, 3)}
+                if (not best) or rec["score"] > best["score"]:
+                    best = rec
+        out.append({
+            "template": tpl,
+            "present": bool(best),
+            "best": best,
+        })
+    return out
+# ==========================================================================
+
+
+# === [ADD] token-level cosine (unigram+bigram) =========================
+_WORD_RE = re.compile(r"[가-힣a-z0-9]+", re.IGNORECASE)
+_STOP = {"은","는","이","가","을","를","에","의","도","와","과","및","으로","에서","부터","까지","하고","그리고","또는","수","것","등","입니다","합니다","있습니다"}
+
+def _ko_word_norm(s: str) -> list[str]:
+    """가벼운 국문 토큰 정규화(소문자, 불용어 제거, 흔한 어미 소거)"""
+    if not s: return []
+    t = kr_norm(s).lower()
+    toks = _WORD_RE.findall(t)
+    out = []
+    for w in toks:
+        if w in _STOP: 
+            continue
+        # 라이트 스테밍 (과하지 않게 자주 나오는 어미만)
+        for suf in ("습니다","합니다","였다","이다","했다","있는","받을","하는","해야","해서"):
+            if w.endswith(suf) and len(w) > len(suf)+1:
+                w = w[:-len(suf)]
+                break
+        if len(w) >= 2:
+            out.append(w)
+    return out
+
+def _bow_vec(tokens: list[str]) -> dict[str, float]:
+    """unigram + bigram count 벡터"""
+    v: dict[str, float] = {}
+    for i, w in enumerate(tokens):
+        v[w] = v.get(w, 0.0) + 1.0
+        if i+1 < len(tokens):
+            bg = w + " " + tokens[i+1]
+            v[bg] = v.get(bg, 0.0) + 1.0
+    return v
+
+def _cosine(a: dict[str, float], b: dict[str, float]) -> float:
+    if not a or not b: 
+        return 0.0
+    dot = 0.0
+    for k, va in a.items():
+        vb = b.get(k)
+        if vb: dot += va * vb
+    na = math.sqrt(sum(x*x for x in a.values()))
+    nb = math.sqrt(sum(x*x for x in b.values()))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+# ======================================================================
+
+
 # ==================== Flask ====================
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -1064,8 +1528,66 @@ def health():
         "/auth/login","/auth/ping","/auth/me",
         "/admin/issue_user","/admin/set_active","/admin/reset_password",
         "/admin/list_users","/admin/delete_user",
-        "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local"
+        "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local",
+        "/guide_forbid_check","/guide_keyword_count","/guide_verify_local","/guide_verify_dedup"
     ]})
+
+@app.post("/guide_forbid_check")
+@require_user
+def guide_forbid_check():
+    """
+    body: {
+      "text": str,                    # 원고
+      "guide_lines": [str] | str      # 필수가이드 입력란(라인 배열 또는 개행문자 포함 문자열)
+    }
+    - 예) guide_lines 안에 "금지어: 비만치료, 전액보장" 또는 "금지어- 고효능 초특가" 등
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "")
+        lines = data.get("guide_lines")
+        if isinstance(lines, str):
+            guide_lines = [ln.strip() for ln in lines.splitlines()]
+        else:
+            guide_lines = [str(x or "").strip() for x in (lines or [])]
+
+        # 일반/체험 100KB 가드
+        limit = enforce_size_limit_or_400(text)
+        if limit: return limit
+
+        forbid_terms = _parse_forbid_lines(guide_lines)
+        hits = _find_forbidden_hits(text, forbid_terms)
+
+        # 완곡 멘트
+        message = _hedged_message("absent")
+        if hits:
+            message = _hedged_message("forbid")
+
+        # 하이라이트/패널로 바로 쓸 수 있게 가공
+        items = []
+        gid = 0
+        for h in hits[:200]:
+            items.append({
+                "id": f"forbid_{gid}",
+                "type": "금지어",
+                "original": h["seg"],
+                "reason": f"[금지어] '{h['term']}'",
+                "severity": "high",
+                "startIndex": h["start"],
+                "endIndex": h["end"],
+                "suggestions": ["문구 완화 또는 삭제 검토"]
+            })
+            gid += 1
+
+        return jsonify({
+            "ok": True,
+            "message": message,           # 단정 대신 완곡
+            "terms": forbid_terms,
+            "count": len(hits),
+            "items": items
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
@@ -1811,6 +2333,528 @@ def spell_local():
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"results": [], "error": str(e)}), 500
+
+@app.post("/guide_keyword_count")
+@require_user
+def guide_keyword_count():
+    """
+    키워드 빈도/위치 검사 (+ 유사도 모드 지원)
+    body: {
+      "title": str,
+      "text": str,
+      "keywords": [str],
+      "require": {"titleMin": int, "bodyMin": int, "totalMin": int},
+      "fuzzy": bool,          # true면 유사도 모드
+      "threshold": float      # 기본 0.82 권장 (0.80~0.85 범위)
+    }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    title = (data.get("title") or "").strip()
+    text  = (data.get("text")  or "").strip()
+    fuzzy = bool(data.get("fuzzy"))
+    threshold = float(data.get("threshold") or 0.5)
+
+    # 비관리자 100KB 가드
+    limit = enforce_size_limit_or_400(text)
+    if limit:
+        return limit
+
+    keywords = data.get("keywords") or []
+    require  = data.get("require") or {}
+    title_need = int(require.get("titleMin") or 0)
+    body_need  = int(require.get("bodyMin")  or 0)
+    total_need = int(require.get("totalMin") or 0)
+
+    # ---------- 유틸: 유사도/정확일치 ----------
+    import re
+
+    def _norm(s: str) -> str:
+        # 공백/문장부호 제거 + 소문자 (유사도 계산용)
+        return re.sub(r"[\s\W_]+", "", (s or "").lower())
+
+    def _ngrams(s: str, n: int = 3):
+        s = _norm(s)
+        return {s[i:i+n] for i in range(max(0, len(s) - n + 1))} or ({s} if s else set())
+
+    def _jaccard(a: set, b: set) -> float:
+        if not a and not b: return 1.0
+        if not a or not b:  return 0.0
+        inter = len(a & b); union = len(a | b)
+        return inter / (union or 1)
+
+    def find_positions_exact(hay: str, kw: str):
+        # 정확일치(현재 동작과 동일)
+        hits, pos = [], 0
+        hay_l, kw_l = (hay or "").lower(), (kw or "").lower()
+        if not kw_l: return hits
+        while True:
+            i = hay_l.find(kw_l, pos)
+            if i == -1: break
+            hits.append({"start": i, "end": i + len(kw)})
+            pos = i + len(kw)
+        return hits
+
+    def find_positions_fuzzy(hay: str, kw: str, thr: float = 0.82, pad: int = 8):
+        """
+        3-gram Jaccard 유사도.
+        공백/조사/어미 변화, '안전하게 귀가하시길' 같은 변형을 포용.
+        - 윈도우: len(kw)+pad
+        """
+        hits = []
+        if not hay or not kw: return hits
+        kw_ngr = _ngrams(kw)
+        win = max(len(kw) + pad, 10)
+
+        i, L = 0, len(hay)
+        while i < L:
+            seg = hay[i:i+win]
+            score = _jaccard(_ngrams(seg), kw_ngr)
+            if score >= thr:
+                hits.append({"start": i, "end": i + len(seg), "score": round(score, 3)})
+                # 겹침 과다 방지: 키워드 길이의 절반만큼 점프
+                i += max(1, len(kw)//2)
+            else:
+                i += 1
+        return hits
+    # -----------------------------------------
+
+    results = []
+    for kw in keywords:
+        # 문장형(공백 포함·두 단어 이상)은 자동 퍼지로, 임계값 살짝 낮춤
+        is_sentence = (" " in kw.strip())
+        thr = (threshold if fuzzy else (0.75 if is_sentence else 0.82))
+
+        tpos = find_positions_fuzzy(title, kw, thr) if (fuzzy or is_sentence) else find_positions_exact(title, kw)
+        bpos = find_positions_fuzzy(text,  kw, thr) if (fuzzy or is_sentence) else find_positions_exact(text,  kw)
+        tot  = len(tpos) + len(bpos)
+
+        ok = True
+        if title_need: ok = ok and (len(tpos) >= title_need)
+        if body_need:  ok = ok and (len(bpos) >= body_need)
+        if total_need: ok = ok and (tot >= total_need)
+
+        results.append({
+            "keyword": kw,
+            "titleCount": len(tpos),
+            "bodyCount":  len(bpos),
+            "total":      tot,
+            "titlePositions": tpos,
+            "bodyPositions":  bpos,
+            "ok": ok
+        })
+
+    all_ok = all(r["ok"] for r in results) if results else True
+    return jsonify({"ok": True, "all_ok": all_ok, "results": results})
+
+@app.post("/guide_verify_dedup")
+@require_user
+def guide_verify_dedup():
+    """
+    문장 템플릿 '정밀 모드' (유사도 제거 버전)
+    - 하이브리드 유사도 대신
+      '핵심어 조합(2개 이상)'만으로 포함 여부 판단.
+    - guide_verify_local 과 동일하게 window 안에서
+      서로 다른 핵심어가 coreNeed 개 이상 같이 등장하면 OK로 처리.
+    body 예시:
+    {
+      "text": str,
+      "templates": [str],
+      "threshold": float = 0.78,   # 하위 호환용(지금은 의미 거의 없음)
+      "coreNeed": int   = 2,       # 핵심어 최소 개수 ( = min_core_hits )
+      "window_size": int = 80      # 옵션, 기본 80
+    }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+
+    raw_text = data.get("text") or ""
+    # 정규화 안 하고 원문 기준으로만 검사 (하이라이트 좌표 유지)
+    text = raw_text
+
+    # Editor.js 에서는 required_guides 라는 이름으로 보내므로
+    # templates / required_guides 둘 다 지원
+    raw_templates = data.get("templates") or data.get("required_guides") or []
+    templates = [
+           (t or "").strip()
+           for t in raw_templates
+           if isinstance(t, str) and (t or "").strip()
+    ]
+
+    # 기존 필드 재활용
+    thr = float(data.get("threshold") or 0.78)      # 응답에만 그대로 돌려줌
+    core_need = int(data.get("coreNeed") or 2)      # = min_core_hits
+    window_size = int(data.get("window_size") or 80)
+
+    # 비관리자 100KB 가드
+    limit = enforce_size_limit_or_400(text)
+    if limit:
+        return limit
+
+    hits = []
+    for tpl in templates:
+        cores = core_terms(tpl)  # 템플릿에서 핵심어 추출
+
+        # 핵심어 조합 기반 후보 구간 찾기
+        candidates = _guide_keyword_windows(
+            text,
+            tpl,
+            window_size=window_size,
+            min_core_hits=core_need,
+        )
+
+        if candidates:
+            best = candidates[0]  # hit_count 가장 큰 구간
+            core_hit = best["hit_count"]
+            start = best["start"]
+            end = best["end"]
+            snippet = best["text"]
+            ok = core_hit >= min(core_need, len(cores))
+
+            # score는 '핵심어 충족 비율'로 재정의 (0~1)
+            score = core_hit / max(1, len(cores))
+        else:
+            core_hit = 0
+            start = -1
+            end = -1
+            snippet = ""
+            ok = False
+            score = 0.0
+
+        hits.append({
+            "template": tpl,
+            "score": round(score, 3),      # 유사도 대신 '핵심어 비율'
+            "coreNeed": core_need,
+            "coreHit": core_hit,
+            "start": start,
+            "end": end,
+            "snippet": snippet,
+            "ok": bool(ok),
+            "cores": cores,
+        })
+
+    all_ok = all(h["ok"] for h in hits) if hits else True
+
+    # threshold는 하위 호환 때문에 그대로 반환만 함
+    return jsonify({
+        "ok": True,
+        "all_ok": all_ok,
+        "hits": hits,
+        "threshold": thr,
+        "mode": "keyword_combo"   # 디버그용 플래그(프론트에서 보고 구분 가능)
+    })
+
+
+# ==== [ADD] Hybrid Similarity Utils (KO) ====
+import re
+from difflib import SequenceMatcher
+try:
+    # 있으면 자동 사용(성능/정확도↑)
+    from rapidfuzz import fuzz as _rf_fuzz
+except Exception:
+    _rf_fuzz = None
+
+_KO_STOP = {"및","그리고","또는","그","이","저","것","에서","으로","하다","합니다","바랍니다","해주세요","하시길","하세요","입니다","하는","하기","하여","하며","또","및"}
+_rx_token = re.compile(r"[가-힣A-Za-z0-9]+")
+
+def _ko_sim_norm(s: str) -> str:
+    """
+    guide_verify_local / 롤링 윈도우 기반 문장 유사도에서 사용하는
+    한국어 문장 정규화 함수.
+    현재는 도돌이표/유사문장 탐지용 _norm_for_dup 과 동일 규칙을 사용한다.
+    """
+    return _norm_for_dup(s or "")
+
+
+# ---- [NEW] KoSimCSE 의미 유사도 (옵션) ----
+try:
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+
+    # 한국어용 KoSimCSE 모델 (로컬 다운로드 후 캐시 사용)
+    _KOSIM_MODEL = SentenceTransformer("BM-K/KoSimCSE-roberta-multitask")
+    print("🔎 KoSimCSE model loaded for guide_verify_local")
+except Exception as _e:
+    _KOSIM_MODEL = None
+    print("⚠️ KoSimCSE not available, fallback to 3-gram only:", _e)
+
+def _semantic_sim_scores(candidates: list[str], template: str) -> list[float]:
+    """
+    KoSimCSE 기반 의미 유사도 (0~1).
+    - 모델이 없으면 전부 0.0 반환 → 기존 3-gram만 사용.
+    - candidates: 실제 원고 쪽 문장/세그먼트 리스트
+    - template: 필수가이드 템플릿 문장
+    """
+    if not _KOSIM_MODEL or not candidates:
+        return [0.0] * len(candidates)
+
+    # normalize_embeddings=True → 코사인 유사도가 단순 내적으로 계산됨
+    embs = _KOSIM_MODEL.encode([template] + candidates, normalize_embeddings=True)
+    q = embs[0]
+    others = embs[1:]
+    # dot product = cosine similarity
+    sims = (others * q).sum(axis=1).tolist()
+
+    # 안전하게 [0, 1]로 클램프
+    out = []
+    for s in sims:
+        try:
+            v = float(s)
+        except Exception:
+            v = 0.0
+        if v < 0.0: v = 0.0
+        if v > 1.0: v = 1.0
+        out.append(v)
+    return out
+# ---- [KoSimCSE block 끝] ----
+
+def kr_norm(s: str) -> str:
+    # 간단 정규화(공백 정리 + 전각/특수 제거 유사)
+    s = (s or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def spacing_agnostic_regex(kw: str) -> str:
+    # '안전 귀가' -> '안전[\s\W_]*귀가'
+    toks = re.split(r"\s+", kw.strip())
+    return r"[\s\W_]*".join(map(re.escape, toks))
+
+def tokenize(s: str):
+    return [t for t in _rx_token.findall(s)]
+
+def _strip_ko_josa_ending(tok: str) -> str:
+    """한국어 토큰의 끝에 붙은 조사/어미를 단순 규칙으로 제거한다.
+    - 대리운전을 / 대리운전은 / 대리운전이 -> 대리운전
+    - 음주가 / 음주를 -> 음주
+    너무 과하게 자르지 않도록, 최소 2글자 이상만 남긴다.
+    """
+    if not tok:
+        return tok
+    # 한글이 없으면 그대로 둔다 (영문/숫자 등)
+    if not re.search(r"[가-힣]", tok):
+        return tok
+
+    base = tok
+
+    # 1) 여러 글자로 된 어미/서술형을 먼저 제거
+    multi_suffixes = [
+        "입니다",
+        "합니다",
+        "였습니다",
+        "했습니다",
+        "되었습니다",
+        "됐습니다",
+        "해요",
+        "돼요",
+        "되어요",
+        "했어요",
+        "였어요",
+    ]
+    for suf in multi_suffixes:
+        if base.endswith(suf) and len(base) > len(suf) + 1:
+            base = base[: -len(suf)]
+            break
+
+    # 2) 한 글자 짜리 조사들(은,는,이,가,을,를,도,만,까,와,과,에,로 등)을
+    #    너무 줄이지 않는 선에서 끝에서부터 잘라낸다.
+    while len(base) > 1 and base[-1] in "은는이가을를도만뿐조까와과에로":
+        base = base[:-1]
+
+    return base
+
+
+def core_terms(s: str, max_terms: int = 5):
+    # 1차 토큰화 + 불용어 제거
+    raw = [t for t in tokenize(s) if t not in _KO_STOP]
+    normalized = []
+
+    for t in raw:
+        # 조사/어미 제거
+        base = _strip_ko_josa_ending(t)
+        # 너무 짧은 건 버림 (한 글자 조사만 남은 경우 등)
+        if len(base) < 2:
+            continue
+        normalized.append(base)
+
+    # 혹시 모두 잘려나갔다면, 원본 토큰을 그대로 사용
+    toks = normalized or raw
+
+    # 길이/희소성 기준 상위 추출
+    toks.sort(key=lambda x: (-len(x), x))
+    return toks[:max_terms] or toks
+
+def token_jaccard(a: str, b: str) -> float:
+    A = set(tokenize(a)); B = set(tokenize(b))
+    if not A and not B: return 1.0
+    if not A or not B:  return 0.0
+    return len(A & B) / len(A | B)
+
+def char_ratio(a: str, b: str) -> float:
+    if _rf_fuzz is not None:
+        # 공백/순서 변화에 강함
+        return _rf_fuzz.token_set_ratio(a, b) / 100.0
+    # fallback: difflib
+    return SequenceMatcher(None, a, b).ratio()
+
+def hybrid_score(a: str, b: str) -> float:
+    a1, b1 = kr_norm(a), kr_norm(b)
+    tj = token_jaccard(a1, b1)
+    cr = char_ratio(a1, b1)
+    # 단어와 문자 유사도의 가중 평균(실전 검증치)
+    return 0.55 * cr + 0.45 * tj
+
+def contains_core_terms(text: str, terms, need: int) -> int:
+    hits = 0
+    for t in terms:
+        if re.search(spacing_agnostic_regex(t), text, flags=re.IGNORECASE):
+            hits += 1
+    return hits if hits >= need else hits
+
+def slide_best(text: str, template: str, pad: int = 16):
+    """
+    템플릿 길이±pad 윈도우로 슬라이드하며 최고 구간 탐색
+    """
+    text = text or ""
+    template = template or ""
+    L = len(text)
+    win = max(len(template) + pad, 20)
+    best = {"score": 0.0, "start": -1, "end": -1, "snippet": ""}
+    i = 0
+    step = max(1, len(template)//3 or 1)
+    while i < L:
+        seg = text[i:i+win]
+        s = hybrid_score(seg, template)
+        if s > best["score"]:
+            best = {"score": s, "start": i, "end": i+len(seg), "snippet": seg[:180]}
+        i += step
+    return best
+# ==== [/ADD] ====
+
+
+@app.post("/guide_verify_local")
+@require_user
+def guide_verify_local():
+    """
+    필수가이드 검사 (유사도 모델 제거, 핵심어 조합 기반)
+    - 템플릿 문장에서 핵심 단어를 추출하고
+    - 원문에서 window_size 글자 안에 서로 다른 핵심 단어가
+      min_core_hits개 이상 같이 등장하는 구간을 찾는다.
+
+    body 예시:
+    {
+      "text": "원고 전체 텍스트",
+      "templates": ["필수가이드 문장1", "필수가이드 문장2", ...],
+      "window_size": 80,      # 옵션, 기본 80
+      "min_core_hits": 2      # 옵션, 기본 2
+    }
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "")
+        limit = enforce_size_limit_or_400(text)
+        if limit:
+            return limit
+
+        # 1) 기본: templates 필드 사용
+        raw_templates = data.get("templates")
+
+        # 2) Editor.js runRequiredCheck 에서 쓰는 required_guides도 지원
+        if not raw_templates:
+            raw_templates = data.get("required_guides") or []
+
+        templates = []
+        for t in raw_templates:
+            # 혹시 dict 형태로 올 수도 있으니 방어 코드
+            if isinstance(t, dict):
+                t = t.get("text") or ""
+            if not isinstance(t, str):
+                t = str(t)
+            t = (t or "").strip()
+            if t:
+                templates.append(t)
+
+
+        # 기본값: 80자 윈도우, 핵심어 2개 이상
+        window_size = int(data.get("window_size") or 80)
+        min_core_hits = int(data.get("min_core_hits") or 2)
+
+        results = []
+
+        for tpl in templates:
+            # 핵심어 조합 기반 후보 구간 찾기
+            candidates = _guide_keyword_windows(
+                text,
+                tpl,
+                window_size=window_size,
+                min_core_hits=min_core_hits,
+            )
+
+            if candidates:
+                # 가장 좋은 후보 하나를 대표로 삼음
+                best = candidates[0]
+                present = True
+                msg = f"핵심 단어가 {best['core_hits']}개 이상 같은 구간에 함께 포함되어 있습니다."
+            else:
+                best = None
+                present = False
+                msg = "원고에서 해당 필수가이드의 핵심 단어가 함께 포함된 구간을 찾지 못했습니다."
+
+            # Editor.js 가 기대하는 형식을 유지하기 위해 matches 배열 구성
+            matches = []
+            for c in candidates:
+                matches.append({
+                    "start": c["start"],
+                    "end": c["end"],
+                    "score": c["score"],
+                    "sentence": c["sentence"],
+                    "core_hits": c["core_hits"],
+                    "core_terms": c["core_terms"],
+                    "kind": "keyword_window",
+                })
+
+            results.append({
+                "template": tpl,
+                "best_score": (best["score"] if best else None),
+                "present": present,
+                "message": msg,
+                "matches": matches,
+            })
+
+        overall_present = any(r["present"] for r in results)
+
+        try:
+            log_usage(_username_from_req(), "guide_local_keywords", len(templates))
+        except Exception:
+            pass
+
+        # Editor.js 의 runRequiredCheck 에서 사용하는 평탄화된 후보 리스트
+        paragraph_candidates = []
+        for idx, r in enumerate(results, start=1):
+            tpl = r.get("template", "")
+            for m in r.get("matches") or []:
+                paragraph_candidates.append({
+                    "template": tpl,
+                    "template_index": idx,          # 1부터 시작 (필수가이드 줄 번호)
+                    "start": m.get("start", 0),
+                    "end": m.get("end", 0),
+                    "sentence": m.get("sentence", ""),
+                    "score": m.get("score", 0.0),
+                    "core_hits": m.get("core_hits", 0),
+                    "core_terms": m.get("core_terms", []),
+                    "best_score": r.get("best_score"),
+                    "kind": m.get("kind", "keyword_window"),
+                })
+
+        return jsonify({
+            "ok": True,
+            "overall_present": overall_present,
+            "results": results,
+            "paragraph_candidates": paragraph_candidates,
+        })
+
+    except Exception as e:
+        log_error(_username_from_req(), "/guide_verify_local", 500, str(e))
+        return jsonify(
+            {"ok": False, "error": "SERVER_ERROR", "message": str(e)}
+        ), 500
 
 
 # ===== 문장 단위 문맥오류 유틸 =====
