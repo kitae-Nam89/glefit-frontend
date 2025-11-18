@@ -698,11 +698,22 @@ async function onToggleUserBlock(username, nextBlocked){
               <h2 className="h2">접속·로그인 트래픽</h2>
               <div className="toolbar">
                 <label className="small">기간</label>
-                <input type="date" className="input" style={{width:150}}
-                  value={range.start} onChange={e=>setRange(v=>({...v,start:e.target.value}))}/>
-                <span className="small">~</span>
-                <input type="date" className="input" style={{width:150}}
-                  value={range.end} onChange={e=>setRange(v=>({...v,end:e.target.value}))}/>
+                <input
+                   type="date"
+                   className="input"
+                   style={{ width: 150 }}
+                   value={range.start}
+                   onChange={e => setRange(v => ({ ...v, start: e.target.value }))}
+                />
+               <span className="small">~</span>
+               <input
+                   type="date"
+                   className="input"
+                   style={{ width: 150 }}
+                   value={range.end}
+                   onChange={e => setRange(v => ({ ...v, end: e.target.value }))}
+                />
+
                 <select className="select" style={{width:110}} value={gran} onChange={e=>setGran(e.target.value)}>
                   <option value="day">일별</option>
                   <option value="week">주별</option>
