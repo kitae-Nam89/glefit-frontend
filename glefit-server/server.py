@@ -273,12 +273,14 @@ def migrate_board_tables():
 
 def log_visit(username, path):
     try:
-        ip  = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
-        ua  = request.headers.get("User-Agent") or ""
+        ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
+        ua = request.headers.get("User-Agent") or ""
         conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        # 방문 시간도 한국 시간(KST, UTC+9) 기준
+        now_kst = datetime.utcnow() + timedelta(hours=9)
         cur.execute(
             "INSERT INTO visit_logs (username, path, ip, user_agent, created_at) VALUES (?,?,?,?,?)",
-            (username or "", path or "", ip[:120], ua[:300], datetime.utcnow().isoformat())
+            (username or "", path or "", ip[:120], ua[:300], now_kst.isoformat())
         )
         conn.commit(); conn.close()
     except Exception:
@@ -359,7 +361,9 @@ def _remaining_days(paid_until: str) -> int:
     if not paid_until:
         return 0
     try:
-        delta = datetime.fromisoformat(paid_until) - datetime.utcnow()
+        # 한국 시간(KST, UTC+9) 기준 남은 일수 계산
+        now_kst = datetime.utcnow() + timedelta(hours=9)
+        delta = datetime.fromisoformat(paid_until) - now_kst
         return max(0, delta.days)
     except Exception:
         return 0
@@ -368,8 +372,10 @@ def _remaining_days(paid_until: str) -> int:
 def log_usage(username, action, files_count=0):
     try:
         conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        # created_at 을 한국 시간(KST, UTC+9) 기준 로컬 시각으로 저장
+        now_kst = datetime.utcnow() + timedelta(hours=9)
         cur.execute("INSERT INTO usage_logs (username, action, files_count, created_at) VALUES (?,?,?,?)",
-                    (username or "", action or "", int(files_count or 0), datetime.utcnow().isoformat()))
+                    (username or "", action or "", int(files_count or 0), now_kst.isoformat()))
         conn.commit(); conn.close()
     except Exception:
         pass
@@ -377,8 +383,10 @@ def log_usage(username, action, files_count=0):
 def log_error(username, path, status, message):
     try:
         conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+        # created_at 도 한국 시간(KST, UTC+9) 기준
+        now_kst = datetime.utcnow() + timedelta(hours=9)
         cur.execute("INSERT INTO error_logs (username, path, status, message, created_at) VALUES (?,?,?,?,?)",
-                    (username or "", path or "", int(status or 0), str(message)[:500], datetime.utcnow().isoformat()))
+                    (username or "", path or "", int(status or 0), str(message)[:500], now_kst.isoformat()))
         conn.commit(); conn.close()
     except Exception:
         pass
@@ -399,7 +407,9 @@ def _is_paid_and_active(u: dict) -> bool:
         pu = u.get("paid_until")
         if not pu:
             return False
-        return datetime.utcnow() <= datetime.fromisoformat(pu)
+        # 한국 시간(KST, UTC+9) 기준으로 만료 여부 판단
+        now_kst = datetime.utcnow() + timedelta(hours=9)
+        return now_kst <= datetime.fromisoformat(pu)
     except Exception:
         return False
 
@@ -449,9 +459,10 @@ def require_user(fn):
             row[0], row[1], (row[2] or ""), int(row[3] or 0), (row[4] or ""), bool(row[5])
         )
 
-        # 결제/기간/활성 체크
+        # 결제/기간/활성 체크 (한국 시간 KST 기준)
         try:
-            if not is_active or not paid_until or datetime.utcnow() > datetime.fromisoformat(paid_until):
+            now_kst = datetime.utcnow() + timedelta(hours=9)
+            if not is_active or not paid_until or now_kst > datetime.fromisoformat(paid_until):
                 return jsonify({"error":"Payment required or expired"}), 402
         except Exception:
             return jsonify({"error":"Payment required or expired"}), 402
@@ -505,9 +516,10 @@ def require_admin(fn):
             (row[0] or "user"), row[1], row[2], int(row[3] or 0), (row[4] or ""), bool(row[5])
         )
 
-        # 결제/기간/활성 체크
+        # 결제/기간/활성 체크 (한국 시간 KST 기준)
         try:
-            if not is_active or not paid_until or datetime.utcnow() > datetime.fromisoformat(paid_until):
+            now_kst = datetime.utcnow() + timedelta(hours=9)
+            if not is_active or not paid_until or now_kst > datetime.fromisoformat(paid_until):
                 return jsonify({"error":"Payment required or expired"}), 402
         except Exception:
             return jsonify({"error":"Payment required or expired"}), 402
@@ -1645,8 +1657,10 @@ def auth_ping():
 def auth_agree_refund():
     username = _username_from_req()
     conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    # 동의 시각을 한국 시간(KST, UTC+9) 기준으로 저장
+    now_kst = datetime.utcnow() + timedelta(hours=9)
     cur.execute("INSERT OR REPLACE INTO agreements (username, agreed_at) VALUES (?,?)",
-                (username, datetime.utcnow().isoformat()))
+                (username, now_kst.isoformat()))
     conn.commit(); conn.close()
     return jsonify({"ok": True})
 
@@ -1697,7 +1711,9 @@ def admin_create_user():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     try:
-        paid_until = datetime.utcnow() + timedelta(days=days) if days>0 else datetime.utcnow()
+        # 한국 시간(KST, UTC+9) 기준으로 이용 기간 계산
+        now_kst = datetime.utcnow() + timedelta(hours=9)
+        paid_until = now_kst + timedelta(days=days) if days>0 else now_kst
         cur.execute(
             "INSERT INTO users (username, password_hash, is_active, paid_until, role) VALUES (?,?,?,?,?)",
             (username, bcrypt.hash(password), 1 if days>0 else 0, paid_until.isoformat(), "user")
@@ -1721,7 +1737,8 @@ def admin_approve():
     if not u:
         return jsonify({"error":"user not found"}), 404
 
-    base = datetime.utcnow()
+    # 한국 시간(KST, UTC+9) 기준으로 연장 기준일 설정
+    base = datetime.utcnow() + timedelta(hours=9)
     try:
         if u.get("paid_until"):
             base = max(base, datetime.fromisoformat(u["paid_until"]))
@@ -2571,10 +2588,10 @@ try:
 
     # 한국어용 KoSimCSE 모델 (로컬 다운로드 후 캐시 사용)
     _KOSIM_MODEL = SentenceTransformer("BM-K/KoSimCSE-roberta-multitask")
-    print("🔎 KoSimCSE model loaded for guide_verify_local")
+    print("[INFO] KoSimCSE model loaded for guide_verify_local")
 except Exception as _e:
     _KOSIM_MODEL = None
-    print("⚠️ KoSimCSE not available, fallback to 3-gram only:", _e)
+    print("[WARN] KoSimCSE not available, fallback to 3-gram only:", _e)
 
 def _semantic_sim_scores(candidates: list[str], template: str) -> list[float]:
     """
@@ -3196,8 +3213,8 @@ def admin_traffic_summary():
     start = (request.args.get("start") or "").strip()
     end   = (request.args.get("end") or "").strip()
 
-    # 기본 기간: 최근 30일
-    today = datetime.utcnow().date()
+    # 기본 기간: 최근 30일 (한국 시간 KST 기준)
+    today = (datetime.utcnow() + timedelta(hours=9)).date()
     if not start:
         start_date = today - timedelta(days=29)
     else:

@@ -733,15 +733,23 @@ async function onToggleUserBlock(username, nextBlocked){
               <table className="table minw-traffic">
                 <thead><tr><th>버킷</th><th>방문수</th><th>로그인수</th><th>Active Users*</th></tr></thead>
                 <tbody>
-                  {Array.isArray(traffic?.series) && traffic.series.length > 0 ? traffic.series.map(r=>(
-                    <tr key={r.bucket}>
-                      <td className="mono">{r.bucket}</td>
-                      <td align="right">{r.visits ?? 0}</td>
-                      <td align="right">{r.logins ?? 0}</td>
-                      <td align="right">{r.active_users ?? "-"}</td>
-                    </tr>
-                  )) : <tr><td colSpan={4} align="center" className="small">데이터가 없습니다</td></tr>}
+                   {Array.isArray(traffic?.series) && traffic.series.length > 0
+                      ? traffic.series.slice().reverse().map(r => (
+                          <tr key={r.bucket}>
+                             <td className="mono">{r.bucket}</td>
+                             <td align="right">{r.visits ?? 0}</td>
+                             <td align="right">{r.logins ?? 0}</td>
+                             <td align="right">{r.active_users ?? "-"}</td>
+                          </tr>
+                        ))
+                      : (
+                        <tr>
+                           <td colSpan={4} align="center" className="small">데이터가 없습니다</td>
+                        </tr>
+                      )
+                   }
                 </tbody>
+
               </table>
               <div className="small" style={{marginTop:6}}>* 주/월 집계에서는 기간 내 유니크 로그인 수가 고정값으로 표시됩니다.</div>
             </div>

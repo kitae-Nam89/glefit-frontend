@@ -348,15 +348,18 @@ function mergeResultsPositionAware(results, overlapThreshold = 0.8) {
   return merged;
 }
 // ========= 상태 =========
-export default function Editor() {
+export default function Editor(props) {
+  // readOnlyPreview 모드 여부 (배경 프리뷰일 때는 방문수 안 찍음)
+  const { readOnlyPreview } = props || {};
+
   // [ADD] login hooks
   // [LOGIN UI 상태]
-const [token, setTokenState] = useState(() => getToken());
-const [loginU, setLoginU] = useState(getSavedId() || "");
-const [loginP, setLoginP] = useState("");
-const [rememberId, setRememberId] = useState(!!getSavedId());
-const [autoLogin, setAutoLogin] = useState(getAutoLogin());
-const [loginErr, setLoginErr] = useState("");
+  const [token, setTokenState] = useState(() => getToken());
+  const [loginU, setLoginU] = useState(getSavedId() || "");
+  const [loginP, setLoginP] = useState("");
+  const [rememberId, setRememberId] = useState(!!getSavedId());
+  const [autoLogin, setAutoLogin] = useState(getAutoLogin());
+  const [loginErr, setLoginErr] = useState("");
 
 // ⬇⬇ 추가: 게스트(체험) 모드 스위치
 const [guestMode, setGuestMode] = useState(false);
@@ -384,30 +387,53 @@ const [boardToken, setBoardToken] = useState(() => {
   try { return localStorage.getItem("glefit_board_token") || ""; } catch { return ""; }
 });
 
-// === [1회용 마이그레이션: sessionStorage → localStorage] ===
-useEffect(() => {
-  try {
-    const ok  = sessionStorage.getItem("glefit_board_ok");
-    const tk  = sessionStorage.getItem("glefit_board_token");
-    const ia  = sessionStorage.getItem("glefit_board_is_admin");
+  // === [1회용 마이그레이션: sessionStorage → localStorage] ===
+  useEffect(() => {
+    try {
+      const ok  = sessionStorage.getItem("glefit_board_ok");
+      const tk  = sessionStorage.getItem("glefit_board_token");
+      const ia  = sessionStorage.getItem("glefit_board_is_admin");
 
-    if (ok || tk || ia) {
-      if (ok) localStorage.setItem("glefit_board_ok", ok);
-      if (tk) localStorage.setItem("glefit_board_token", tk);
-      if (ia) localStorage.setItem("glefit_board_is_admin", ia);
+      if (ok || tk || ia) {
+        if (ok) localStorage.setItem("glefit_board_ok", ok);
+        if (tk) localStorage.setItem("glefit_board_token", tk);
+        if (ia) localStorage.setItem("glefit_board_is_admin", ia);
 
-      sessionStorage.removeItem("glefit_board_ok");
-      sessionStorage.removeItem("glefit_board_token");
-      sessionStorage.removeItem("glefit_board_is_admin");
+        sessionStorage.removeItem("glefit_board_ok");
+        sessionStorage.removeItem("glefit_board_token");
+        sessionStorage.removeItem("glefit_board_is_admin");
+      }
+    } catch {}
+  }, []);
+
+  // === [ADD] 방문 로그 기록: 게스트/일반/관리자 공통 ===
+  useEffect(() => {
+    // SSR 방지 + 배경 프리뷰 모드는 제외
+    if (typeof window === "undefined") return;
+    if (readOnlyPreview) return;
+
+    try {
+      const path =
+        (window.location && window.location.pathname) || "/";
+      const qs =
+        (window.location && window.location.search) || "";
+      // Editor.js 상단에서 axios.defaults.baseURL = API_BASE; 가 이미 설정되어 있으므로
+      // 여기서는 절대경로가 아니라 상대경로만 보내면 됨.
+      axios
+        .post("/track/visit", { path: path + qs })
+        .catch(() => {
+          // 방문 로그 실패는 조용히 무시 (사용자에게 영향 X)
+        });
+    } catch {
+      // 어떤 예외도 사용자에게는 영향 없도록 무시
     }
-  } catch {}
-}, []);
+  }, [readOnlyPreview]);
 
-// 공통 인증 헤더: 메인 토큰 > 게시판 토큰
-function authHeaders() {
-  const t = (token || boardToken || "").trim();
-  return t ? { Authorization: `Bearer ${t}` } : {};
-}
+  // 공통 인증 헤더: 메인 토큰 > 게시판 토큰
+  function authHeaders() {
+    const t = (token || boardToken || "").trim();
+    return t ? { Authorization: `Bearer ${t}` } : {};
+  }
 
 
 // 미니로그인 입력은 기존 loginU/loginP 상태를 재사용해도 OK (동일 계정)
