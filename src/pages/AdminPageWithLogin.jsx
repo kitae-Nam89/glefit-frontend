@@ -38,7 +38,7 @@ const CSS = `
 .sticky{position:sticky;top:14px}
 .kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
 @media (max-width:800px){.kpis{grid-template-columns:1fr}}
-.scrollx{overflow:auto;cursor:grab}
+.scrollx{overflow:auto;cursor:grab;max-width:100%}
 .scrollx:active{cursor:grabbing}
 .minw-users{min-width:960px}     /* 사용자 목록 */
 .minw-usage{min-width:840px}     /* 운영 통계 표 */
@@ -115,15 +115,35 @@ export default function AdminPage(){
   const [range, setRange] = useState({ start:"", end:"" });
   const [traffic, setTraffic] = useState({ series:[], totals:{ visits:0, logins:0, unique_users:0 }});
   const [trafficLoading, setTrafficLoading] = useState(false);
+  // 오른쪽 통계 패널(운영 통계 + 트래픽) 접기/펴기
+  const [showSidePanel, setShowSidePanel] = useState(true);
 
   /* 초기 토큰 */
-  useEffect(()=>{ const t = localStorage.getItem("glefit_token") || ""; setToken(t); setAuthHeader(t); if (t) verifyToken(); },[]);
-  async function verifyToken(){
-    try{
+  useEffect(() => {
+    const t = localStorage.getItem("glefit_token") || "";
+    if (!t) return;              // 토큰 없으면 아무 것도 안 함
+
+    setToken(t);
+    setAuthHeader(t);
+    verifyToken();               // 유효성 검증
+  }, []);
+
+  async function verifyToken() {
+    try {
+      // 토큰이 유효하면 ping + me 둘 다 200 이어야 함
       await axios.get(`${API_BASE}/auth/ping`);
       const { data } = await axios.get(`${API_BASE}/auth/me`);
-      setMe(data); setPingOK(true);
-    }catch{ setPingOK(false); setMe(null); }
+      setMe(data);
+      setPingOK(true);
+    } catch (e) {
+      // 401 등 어떤 이유로든 실패 → 토큰 정리 + 로그인 화면으로
+      console.warn("verifyToken 실패:", e?.response?.status, e?.response?.data);
+      localStorage.removeItem("glefit_token");
+      setAuthHeader("");
+      setToken("");
+      setMe(null);
+      setPingOK(false);
+    }
   }
   const isAdmin = useMemo(()=> {
     const r = String(me?.role||"").toLowerCase().trim();
@@ -254,14 +274,53 @@ async function onToggleUserBlock(username, nextBlocked){
 
   /* 활성/비번/삭제 */
   async function onIssue(e){
-    e?.preventDefault(); setActionLoading(true);
-    try{
-      const payload = { ...fUser }; if(!payload.password) delete payload.password;
-      const { data } = await axios.post(`${API_BASE}/admin/issue_user`, payload);
+    e?.preventDefault();
+
+    // ── 간단 프론트 유효성 체크 (서버까지 안 보내고 바로 막기) ──
+    if (!fUser.username.trim()) {
+      alert("아이디를 입력해주세요.");
+      return;
+    }
+    if (!fUser.days || fUser.days <= 0) {
+      alert("기간(일)은 1 이상이어야 합니다.");
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const payload = { ...fUser };
+      if (!payload.password) delete payload.password; // 연장 시 비밀번호 생략
+
+      const { data } = await axios.post(
+        `${API_BASE}/admin/issue_user`,
+        payload
+      );
+
       await refreshList();
-      setFUser({ username:fUser.username, password:"", days:fUser.days||32, site_url:fUser.site_url||"", note:"" });
-      alert(`처리 완료: ${data.username} · 만료 ${data.paid_until}\n잔여 ${data.remaining_days}일`);
-    } finally { setActionLoading(false); }
+      setFUser({
+        username: fUser.username,
+        password: "",
+        days: fUser.days || 32,
+        site_url: fUser.site_url || "",
+        note: "",
+      });
+
+      alert(
+        `처리 완료: ${data.username} · 만료 ${data.paid_until}\n잔여 ${data.remaining_days}일`
+      );
+    } catch (err) {
+      console.error("issue_user error:", err);
+
+      const msg =
+        err?.response?.data?.error ||
+        err?.response?.data?.detail ||
+        err.message ||
+        "알 수 없는 오류";
+
+      alert(`발급/연장 실패: ${msg}`);
+    } finally {
+      setActionLoading(false);
+    }
   }
   async function onToggleActive(u, next){
     try{ await axios.post(`${API_BASE}/admin/set_active`, { username:u.username, is_active: next }); await refreshList(); }
@@ -323,13 +382,35 @@ async function onToggleUserBlock(username, nextBlocked){
           {notice?.trim()?notice:"— 공지를 입력하세요 —"}
         </div>
         <div className="toolbar">
-          <button className="btn" onClick={()=>{ const v = prompt("상단 공지 문구를 입력하세요 (빈칸=숨김)", notice || ""); if(v!==null) setNotice(v); }}>공지 수정</button>
-          <button className="btn" onClick={doLogout} style={{background:"#ff5a5a",color:"#fff",borderColor:"#ff5a5a"}}>로그아웃</button>
+          <button
+            className="btn"
+            onClick={()=>{ const v = prompt("상단 공지 문구를 입력하세요 (빈칸=숨김)", notice || ""); if(v!==null) setNotice(v); }}
+          >
+            공지 수정
+          </button>
+
+          <button
+            className="btn"
+            onClick={()=>setShowSidePanel(v=>!v)}
+          >
+            {showSidePanel ? "운영통계 접기" : "운영통계 열기"}
+          </button>
+
+          <button
+            className="btn"
+            onClick={doLogout}
+            style={{background:"#ff5a5a",color:"#fff",borderColor:"#ff5a5a"}}
+          >
+            로그아웃
+          </button>
         </div>
       </div>
 
-      {/* grid: 좌(조작 고정) / 중(사용자 목록 크게) / 우(통계/트래픽) */}
-      <div className="grid">
+      {/* grid: 좌(조작 고정) / 중(사용자 목록+게시판) / 우(통계/트래픽, 옵션) */}
+      <div
+        className="grid"
+        style={showSidePanel ? undefined : { gridTemplateColumns: "260px minmax(0,1fr)" }}
+      >
         {/* 좌: 발급/연장 */}
 <div className="sticky" style={{display:"grid",gap:16}}>
   <form onSubmit={onIssue} className="card card-tight form-compact">
@@ -431,92 +512,226 @@ async function onToggleUserBlock(username, nextBlocked){
 <div style={{ display: "flex", flexDirection: "column", gap: 18, minWidth: 0 }}>
   {/* ───────── 사용자 목록 카드 ───────── */}
   <div className="card" style={{ height: "fit-content" }}>
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: 10,
+      }}
+    >
       <h2 className="h2">사용자 목록</h2>
-      <div style={{display:"flex",gap:8,alignItems:"center"}}>
-        <input className="input" placeholder="아이디 검색" value={q} onChange={e=>setQ(e.target.value)} style={{width:220}}/>
-        <button className="btn" onClick={refreshList}>검색</button>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input
+          className="input"
+          placeholder="아이디 검색"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: 220 }}
+        />
+        <button className="btn" onClick={refreshList}>
+          검색
+        </button>
       </div>
     </div>
 
-    <div ref={usersScrollRef} className="scrollx">
-      <table className="table minw-users">
-        <thead>
-          <tr>
-            <th style={{width:160}}>아이디</th>
-            <th style={{width:66}}>활성</th>
-            <th style={{width:66}}>동시</th>
-            <th style={{width:70}}>남은</th>
-            <th style={{width:120}}>만료일</th>
-            <th style={{width:260}}>메모</th>
-            <th style={{width:220}}>제한 도메인</th>
-            <th style={{width:120}}>생성일</th>
-            <th style={{width:280}}>작업</th>
-          </tr>
-        </thead>
-        <tbody>
-          {listLoading ? (
-            <tr><td colSpan={9} align="center" className="small">불러오는 중...</td></tr>
-          ) : rows.length === 0 ? (
-            <tr><td colSpan={9} align="center" className="small">데이터 없음</td></tr>
-          ) : rows.map(u => (
-            <tr key={u.username}>
-              <td className="mono" style={{ whiteSpace: "nowrap" }} translate="no">
-                <span className="notranslate" translate="no" lang="en">{u.username}</span>
-              </td>
-              <td align="center">
-                <input type="checkbox" checked={!!u.is_active}
-                       onChange={(e)=>onToggleActive(u, e.target.checked)} />
-              </td>
-              <td align="center">
-                <input
-                  type="checkbox"
-                  checked={!!u.allow_concurrent}
-                  onChange={async (e)=>{
-                    try{
-                      setActionLoading(true);
-                      await axios.post(`${API_BASE}/admin/set_allow_concurrent`, { username:u.username, allow:e.target.checked });
-                      await refreshList();
-                    } finally { setActionLoading(false); }
-                  }}
-                />
-              </td>
-              <td align="center" style={{whiteSpace:"nowrap"}}>
-                <span style={{color:u.remaining_days<=3?"#dc2626":"inherit",fontWeight:u.remaining_days<=3?600:400}}>
-                  {u.remaining_days}
-                </span>
-              </td>
-              <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.paid_until)}</td>
-              <td title={u.note || ""} style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:260}}>
-                {u.note?.trim() ? u.note : "-"}
-              </td>
-              <td className="mono" title={u.site_url || "-"}
-                  style={{whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}>
-                {u.site_url || "-"}
-              </td>
-              <td className="mono" style={{whiteSpace:"nowrap"}}>{fmtDate(u.created_at)}</td>
-              <td>
-                <div style={{display:"flex",gap:6,flexWrap:"nowrap",overflowX:"auto"}}>
-                  <button className="btn-sm" onClick={()=>setFUser(v=>({...v, username:u.username}))}>연장대상</button>
-                  <button className="btn-sm" onClick={()=>onResetPassword(u)}>비번초기화</button>
-                  <button
-                    className="btn-sm"
-                    onClick={()=>{
-                      const add = Number(prompt("얼마나 연장할까요? (일)", "32")||0);
-                      if(!add) return;
-                      setActionLoading(true);
-                      axios.post(`${API_BASE}/admin/issue_user`, { username:u.username, days:add, note:"+연장" })
-                        .then(()=>refreshList())
-                        .finally(()=>setActionLoading(false));
-                    }}
-                  >+연장</button>
-                  <button className="btn-sm" style={{color:"#dc2626",borderColor:"#fecaca"}} onClick={()=>onDeleteUser(u)}>삭제</button>
-                </div>
-              </td>
+    {/* 사용자 목록: 카드 내부 가로+세로 스크롤 */}
+    <div
+      style={{
+        maxHeight: 420,          // 카드 높이 제한 → 여기서만 세로 스크롤
+        overflowY: "auto",       // 오른쪽 스크롤바
+        overflowX: "auto",       // 아래쪽 스크롤바
+        width: "100%",
+        maxWidth: "100%",
+      }}
+    >
+      <div
+        ref={usersScrollRef}
+        className="scrollx"
+        style={{ overflowY: "visible" }} // 세로 스크롤은 바깥 div가 담당
+      >
+        <table className="table minw-users">
+          <thead>
+            <tr>
+              <th style={{ width: 160 }}>아이디</th>
+              <th style={{ width: 66 }}>활성</th>
+              <th style={{ width: 66 }}>동시</th>
+              <th style={{ width: 70 }}>남은</th>
+              <th style={{ width: 120 }}>만료일</th>
+              <th style={{ width: 260 }}>메모</th>
+              <th style={{ width: 220 }}>제한 도메인</th>
+              <th style={{ width: 120 }}>생성일</th>
+              <th style={{ width: 280 }}>작업</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {listLoading ? (
+              <tr>
+                <td colSpan={9} align="center" className="small">
+                  불러오는 중...
+                </td>
+              </tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={9} align="center" className="small">
+                  데이터 없음
+                </td>
+              </tr>
+            ) : (
+              rows.map((u) => (
+                <tr key={u.username}>
+                  <td
+                    className="mono"
+                    style={{ whiteSpace: "nowrap" }}
+                    translate="no"
+                  >
+                    <span
+                      className="notranslate"
+                      translate="no"
+                      lang="en"
+                    >
+                      {u.username}
+                    </span>
+                  </td>
+                  <td align="center">
+                    <input
+                      type="checkbox"
+                      checked={!!u.is_active}
+                      onChange={(e) =>
+                        onToggleActive(u, e.target.checked)
+                      }
+                    />
+                  </td>
+                  <td align="center">
+                    <input
+                      type="checkbox"
+                      checked={!!u.allow_concurrent}
+                      onChange={async (e) => {
+                        try {
+                          setActionLoading(true);
+                          await axios.post(
+                            `${API_BASE}/admin/set_allow_concurrent`,
+                            { username: u.username, allow: e.target.checked }
+                          );
+                          await refreshList();
+                        } finally {
+                          setActionLoading(false);
+                        }
+                      }}
+                    />
+                  </td>
+                  <td
+                    align="center"
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    <span
+                      style={{
+                        color:
+                          u.remaining_days <= 3 ? "#dc2626" : "inherit",
+                        fontWeight:
+                          u.remaining_days <= 3 ? 600 : 400,
+                      }}
+                    >
+                      {u.remaining_days}
+                    </span>
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    {fmtDate(u.paid_until)}
+                  </td>
+                  <td
+                    title={u.note || ""}
+                    style={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: 260,
+                    }}
+                  >
+                    {u.note?.trim() ? u.note : "-"}
+                  </td>
+                  <td
+                    className="mono"
+                    title={u.site_url || "-"}
+                    style={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: 220,
+                    }}
+                  >
+                    {u.site_url || "-"}
+                  </td>
+                  <td
+                    className="mono"
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    {fmtDate(u.created_at)}
+                  </td>
+                  <td>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        flexWrap: "nowrap",
+                        overflowX: "auto",
+                      }}
+                    >
+                      <button
+                        className="btn-sm"
+                        onClick={() =>
+                          setFUser((v) => ({ ...v, username: u.username }))
+                        }
+                      >
+                        연장대상
+                      </button>
+                      <button
+                        className="btn-sm"
+                        onClick={() => onResetPassword(u)}
+                      >
+                        비번초기화
+                      </button>
+                      <button
+                        className="btn-sm"
+                        onClick={() => {
+                          const add = Number(
+                            prompt("얼마나 연장할까요? (일)", "32") || 0
+                          );
+                          if (!add) return;
+                          setActionLoading(true);
+                          axios
+                            .post(`${API_BASE}/admin/issue_user`, {
+                              username: u.username,
+                              days: add,
+                              note: "+연장",
+                            })
+                            .then(() => refreshList())
+                            .finally(() => setActionLoading(false));
+                        }}
+                      >
+                        +연장
+                      </button>
+                      <button
+                        className="btn-sm"
+                        style={{
+                          color: "#dc2626",
+                          borderColor: "#fecaca",
+                        }}
+                        onClick={() => onDeleteUser(u)}
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -580,17 +795,23 @@ async function onToggleUserBlock(username, nextBlocked){
     </div>
 
     {/* 게시글 목록: 고정 높이 + 내부 스크롤 */}
+    {/* 게시글 목록: 고정 높이 + 내부 가로/세로 스크롤 */}
     <div
       style={{
-        maxHeight: 420,          // 10~20행 정도 보이게 조절 (320~480에서 취향대로)
+        maxHeight: 420,
         overflowY: "auto",
         overflowX: "auto",
         border: "1px solid #e5e7eb",
-        borderRadius: 8
+        borderRadius: 8,
+        width: "100%",
+        maxWidth: "100%"
       }}
     >
       <div className="scrollx" style={{ overflowY: "visible" }}>
-        <table className="table" style={{ width: "100%", tableLayout: "auto", minWidth: 900 }}>
+        <table
+          className="table"
+          style={{ width: "100%", tableLayout: "auto", minWidth: 900 }}
+        >
           <thead>
             <tr>
               <th style={{width:70}}>고정</th>
@@ -641,120 +862,264 @@ async function onToggleUserBlock(username, nextBlocked){
   </div>
 </div>
 
-        {/* 우: 운영 통계 + 트래픽 (보조) */}
-        <div className="right-col">
-          {/* 운영 통계 */}
-          <div className="card">
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <h2 className="h2">운영 통계</h2>
-              <button className="btn" onClick={loadUsageSummary} disabled={usageLoading}>
-                {usageLoading ? "새로고침..." : "새로고침"}
-              </button>
-            </div>
+        {/* 우: 운영 통계 + 트래픽 (보조, 접기 가능) */}
+        {showSidePanel && (
+          <div className="right-col">
+            {/* 운영 통계 */}
+            <div className="card">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 10,
+                }}
+              >
+                <h2 className="h2">운영 통계</h2>
+                <button
+                  className="btn"
+                  onClick={loadUsageSummary}
+                  disabled={usageLoading}
+                >
+                  {usageLoading ? "새로고침..." : "새로고침"}
+                </button>
+              </div>
 
-            <div className="kpis" style={{marginBottom:10}}>
-              <div className="card" style={{padding:12}}><div className="small">동의(환불규정) 기록</div><div style={{fontSize:18,fontWeight:600}}>{usageSummary.agreements?.length||0}</div></div>
-              <div className="card" style={{padding:12}}><div className="small">에러 사용자 수</div><div style={{fontSize:18,fontWeight:600}}>{usageSummary.errors?.length||0}</div></div>
-              <div className="card" style={{padding:12}}><div className="small">집계 사용자 수</div><div style={{fontSize:18,fontWeight:600}}>{usageSummary.usage?.length||0}</div></div>
-            </div>
+              {/* KPI 카드 */}
+              <div className="kpis" style={{ marginBottom: 10 }}>
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="small">동의(환불규정) 기록</div>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>
+                    {usageSummary.agreements?.length || 0}
+                  </div>
+                </div>
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="small">에러 사용자 수</div>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>
+                    {usageSummary.errors?.length || 0}
+                  </div>
+                </div>
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="small">집계 사용자 수</div>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>
+                    {usageSummary.usage?.length || 0}
+                  </div>
+                </div>
+              </div>
 
-            <div ref={usageScrollRef} className="scrollx">
-              <table className="table minw-usage">
-                <thead><tr><th>아이디</th><th>verify</th><th>policy</th><th>dedup_inter</th><th>dedup_intra</th><th>files합</th></tr></thead>
-                <tbody>
-                  {usageSummary.usage?.length ? usageSummary.usage.map(u=>(
-                    <tr key={u.username}>
-                      <td className="mono">{u.username}</td>
-                      <td align="center">{u.verify||0}</td>
-                      <td align="center">{u.policy||0}</td>
-                      <td align="center">{u.dedup_inter||0}</td>
-                      <td align="center">{u.dedup_intra||0}</td>
-                      <td align="center">{u.files||0}</td>
-                    </tr>
-                  )) : <tr><td colSpan={6} align="center" className="small">데이터 없음</td></tr>}
-                </tbody>
-              </table>
-            </div>
+              {/* 사용량 테이블 */}
+              <div style={{ overflowX: "auto", maxWidth: "100%" }}>
+                <div ref={usageScrollRef} className="scrollx">
+                  <table className="table minw-usage">
+                    <thead>
+                      <tr>
+                        <th>아이디</th>
+                        <th>verify</th>
+                        <th>policy</th>
+                        <th>dedup_inter</th>
+                        <th>dedup_intra</th>
+                        <th>files합</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usageSummary.usage?.length ? (
+                        usageSummary.usage.map((u) => (
+                          <tr key={u.username}>
+                            <td className="mono">{u.username}</td>
+                            <td align="center">{u.verify || 0}</td>
+                            <td align="center">{u.policy || 0}</td>
+                            <td align="center">{u.dedup_inter || 0}</td>
+                            <td align="center">{u.dedup_intra || 0}</td>
+                            <td align="center">{u.files || 0}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td
+                            colSpan={6}
+                            align="center"
+                            className="small"
+                          >
+                            데이터 없음
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
-            <div ref={usageScrollRef} className="scrollx" style={{marginTop:10}}>
-              <table className="table minw-usage">
-                <thead><tr><th>아이디</th><th>에러수</th><th>마지막</th></tr></thead>
-                <tbody>
-                  {usageSummary.errors?.length ? usageSummary.errors.map(e=>(
-                    <tr key={e.username}>
-                      <td className="mono">{e.username||"-"}</td>
-                      <td align="center">{e.errors||0}</td>
-                      <td>{e.last||"-"}</td>
-                    </tr>
-                  )) : <tr><td colSpan={3} align="center" className="small">에러 기록 없음</td></tr>}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* 트래픽 */}
-          <div className="card">
-            <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"end",justifyContent:"space-between",marginBottom:10}}>
-              <h2 className="h2">접속·로그인 트래픽</h2>
-              <div className="toolbar">
-                <label className="small">기간</label>
-                <input
-                   type="date"
-                   className="input"
-                   style={{ width: 150 }}
-                   value={range.start}
-                   onChange={e => setRange(v => ({ ...v, start: e.target.value }))}
-                />
-               <span className="small">~</span>
-               <input
-                   type="date"
-                   className="input"
-                   style={{ width: 150 }}
-                   value={range.end}
-                   onChange={e => setRange(v => ({ ...v, end: e.target.value }))}
-                />
-
-                <select className="select" style={{width:110}} value={gran} onChange={e=>setGran(e.target.value)}>
-                  <option value="day">일별</option>
-                  <option value="week">주별</option>
-                  <option value="month">월별</option>
-                </select>
-                <button className="btn" onClick={loadTraffic} disabled={trafficLoading}>{trafficLoading?"불러오는 중...":"새로고침"}</button>
+              {/* 에러 테이블 */}
+              <div
+                style={{
+                  overflowX: "auto",
+                  maxWidth: "100%",
+                  marginTop: 10,
+                }}
+              >
+                <div className="scrollx">
+                  <table className="table minw-usage">
+                    <thead>
+                      <tr>
+                        <th>아이디</th>
+                        <th>에러수</th>
+                        <th>마지막</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usageSummary.errors?.length ? (
+                        usageSummary.errors.map((e) => (
+                          <tr key={e.username}>
+                            <td className="mono">{e.username || "-"}</td>
+                            <td align="center">{e.errors || 0}</td>
+                            <td>{e.last || "-"}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td
+                            colSpan={3}
+                            align="center"
+                            className="small"
+                          >
+                            에러 기록 없음
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
 
-            <div className="kpis" style={{marginBottom:10}}>
-              <div className="card" style={{padding:12}}><div className="small">총 방문수</div><div style={{fontSize:20,fontWeight:700}}>{traffic?.totals?.visits ?? 0}</div></div>
-              <div className="card" style={{padding:12}}><div className="small">총 로그인수</div><div style={{fontSize:20,fontWeight:700}}>{traffic?.totals?.logins ?? 0}</div></div>
-              <div className="card" style={{padding:12}}><div className="small">유니크 로그인(ID)</div><div style={{fontSize:20,fontWeight:700}}>{traffic?.totals?.unique_users ?? 0}</div></div>
-            </div>
+            {/* 트래픽 */}
+            <div className="card">
+              <div
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  alignItems: "end",
+                  justifyContent: "space-between",
+                  marginBottom: 10,
+                }}
+              >
+                <h2 className="h2">접속·로그인 트래픽</h2>
+                <div className="toolbar">
+                  <label className="small">기간</label>
+                  <input
+                    type="date"
+                    className="input"
+                    style={{ width: 150 }}
+                    value={range.start}
+                    onChange={(e) =>
+                      setRange((v) => ({ ...v, start: e.target.value }))
+                    }
+                  />
+                  <span className="small">~</span>
+                  <input
+                    type="date"
+                    className="input"
+                    style={{ width: 150 }}
+                    value={range.end}
+                    onChange={(e) =>
+                      setRange((v) => ({ ...v, end: e.target.value }))
+                    }
+                  />
 
-            <div ref={trafficScrollRef} className="scrollx">
-              <table className="table minw-traffic">
-                <thead><tr><th>버킷</th><th>방문수</th><th>로그인수</th><th>Active Users*</th></tr></thead>
-                <tbody>
-                   {Array.isArray(traffic?.series) && traffic.series.length > 0
-                      ? traffic.series.slice().reverse().map(r => (
-                          <tr key={r.bucket}>
-                             <td className="mono">{r.bucket}</td>
-                             <td align="right">{r.visits ?? 0}</td>
-                             <td align="right">{r.logins ?? 0}</td>
-                             <td align="right">{r.active_users ?? "-"}</td>
-                          </tr>
-                        ))
-                      : (
+                  <select
+                    className="select"
+                    style={{ width: 110 }}
+                    value={gran}
+                    onChange={(e) => setGran(e.target.value)}
+                  >
+                    <option value="day">일별</option>
+                    <option value="week">주별</option>
+                    <option value="month">월별</option>
+                  </select>
+                  <button
+                    className="btn"
+                    onClick={loadTraffic}
+                    disabled={trafficLoading}
+                  >
+                    {trafficLoading ? "불러오는 중..." : "새로고침"}
+                  </button>
+                </div>
+              </div>
+
+              {/* 트래픽 KPI */}
+              <div className="kpis" style={{ marginBottom: 10 }}>
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="small">총 방문수</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>
+                    {traffic?.totals?.visits ?? 0}
+                  </div>
+                </div>
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="small">총 로그인수</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>
+                    {traffic?.totals?.logins ?? 0}
+                  </div>
+                </div>
+                <div className="card" style={{ padding: 12 }}>
+                  <div className="small">유니크 로그인(ID)</div>
+                  <div style={{ fontSize: 20, fontWeight: 700 }}>
+                    {traffic?.totals?.unique_users ?? 0}
+                  </div>
+                </div>
+              </div>
+
+              {/* 트래픽 표 */}
+              <div style={{ overflowX: "auto", maxWidth: "100%" }}>
+                <div ref={trafficScrollRef} className="scrollx">
+                  <table className="table minw-traffic">
+                    <thead>
+                      <tr>
+                        <th>버킷</th>
+                        <th>방문수</th>
+                        <th>로그인수</th>
+                        <th>Active Users*</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Array.isArray(traffic?.series) &&
+                      traffic.series.length > 0 ? (
+                        traffic.series
+                          .slice()
+                          .reverse()
+                          .map((r) => (
+                            <tr key={r.bucket}>
+                              <td className="mono">{r.bucket}</td>
+                              <td align="right">{r.visits ?? 0}</td>
+                              <td align="right">{r.logins ?? 0}</td>
+                              <td align="right">
+                                {r.active_users ?? "-"}
+                              </td>
+                            </tr>
+                          ))
+                      ) : (
                         <tr>
-                           <td colSpan={4} align="center" className="small">데이터가 없습니다</td>
+                          <td
+                            colSpan={4}
+                            align="center"
+                            className="small"
+                          >
+                            데이터가 없습니다
+                          </td>
                         </tr>
-                      )
-                   }
-                </tbody>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
 
-              </table>
-              <div className="small" style={{marginTop:6}}>* 주/월 집계에서는 기간 내 유니크 로그인 수가 고정값으로 표시됩니다.</div>
+              <div className="small" style={{ marginTop: 6 }}>
+                * 주/월 집계에서는 기간 내 유니크 로그인 수가 고정값으로
+                표시됩니다.
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
