@@ -1301,10 +1301,91 @@ const generateHighlightedHTML = (raw, matches, keywords, terms) => {
   const hasOverlap = (list, s, e) =>
     list.some((sp) => !(sp.end <= s || e <= sp.start));
 
-  // ===== 2) 키워드 / 단어찾기 span (중앙 화면에서는 사용 안 함) =====
-  // 중앙 검사 화면은 서버 검사 결과(맞춤법/심의/필수가이드)만 하이라이트합니다.
-  // 키워드/단어찾기 하이라이트는 PDF 및 하단 통계에서만 사용합니다.
+  // ===== 2) 키워드 / 단어찾기 span (글자색 + 굵기만 강조) =====
+  // - 서버 검사 결과(span)가 있는 구간은 덮어쓰지 않음
+  // - 클릭하면 data-start / data-end 로 커서 이동 가능
 
+  // 2-1) 키워드
+  if (Array.isArray(keywords)) {
+    keywords.forEach((raw) => {
+      const kw = (raw || "").trim();
+      if (!kw) return;
+
+      let re;
+      try {
+        re = buildLooseRegex(kw);
+      } catch {
+        return;
+      }
+
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const s0 = m.index;
+        const e0 = re.lastIndex;
+        if (!Number.isFinite(s0) || !Number.isFinite(e0) || e0 <= s0) continue;
+
+        const start = clamp(s0, 0, N);
+        const end = clamp(e0, 0, N);
+        if (end <= start) continue;
+        if (hasOverlap(spans, start, end)) continue; // 기존 결과(span) 우선
+
+        spans.push({
+          kind: "keyword",
+          priority: 5,
+          start,
+          end,
+          cls: "keyword-token",
+          attrs: {
+            "data-type": "keyword",
+            "data-start": start,
+            "data-end": end,
+            "data-orig": text.slice(start, end),
+          },
+        });
+      }
+    });
+  }
+
+  // 2-2) 단어찾기(핵심용어)
+  if (Array.isArray(terms)) {
+    terms.forEach((raw) => {
+      const t = (raw || "").trim();
+      if (!t) return;
+
+      let re;
+      try {
+        re = buildLooseRegex(t);
+      } catch {
+        return;
+      }
+
+      let m;
+      while ((m = re.exec(text)) !== null) {
+        const s0 = m.index;
+        const e0 = re.lastIndex;
+        if (!Number.isFinite(s0) || !Number.isFinite(e0) || e0 <= s0) continue;
+
+        const start = clamp(s0, 0, N);
+        const end = clamp(e0, 0, N);
+        if (end <= start) continue;
+        if (hasOverlap(spans, start, end)) continue;
+
+        spans.push({
+          kind: "term",
+          priority: 4,
+          start,
+          end,
+          cls: "term-token",
+          attrs: {
+            "data-type": "term",
+            "data-start": start,
+            "data-end": end,
+            "data-orig": text.slice(start, end),
+          },
+        });
+      }
+    });
+  }
 
   // ===== 3) 시작 위치 + 우선순위 순으로 정렬 =====
   spans.sort((a, b) => {
@@ -2304,17 +2385,18 @@ const saveAsPDFSimple = async () => {
           border-left:4px solid #6b8cff;
           padding-left:6px;
         }
+        /* ───────── 글핏 리포트 · 하이라이트 공통 테마 ───────── */
         table.rp-table {
           width:100%;
           border-collapse:collapse;
           font-size:10pt;
         }
         table.rp-table thead th {
-          background:#eaf0ff;
-          color:#233159;
+          background:#f3e8ff;
+          color:#4c1d95;
           padding:8px;
           text-align:left;
-          border-bottom:1px solid #cfd9f8;
+          border-bottom:1px solid #e9d5ff;
         }
         table.rp-table tbody td {
           padding:7px 8px;
@@ -2325,26 +2407,34 @@ const saveAsPDFSimple = async () => {
           break-inside:avoid;
           page-break-inside:avoid;
         }
+
+        .rp-section {
+          margin:0 0 4mm;
+          border-left:4px solid #7c3aed;
+          padding-left:6px;
+        }
+
         .rp-charts {
           display:grid;
           grid-template-columns:1fr 1fr;
           gap:8mm;
         }
         .rp-chart {
-          background:#fafbff;
-          border:1px solid #ebeffa;
-          border-radius:10px;
+          background:#faf5ff;
+          border:1px solid #e9d5ff;
+          border-radius:12px;
           padding:6mm;
         }
         .rp-chart h3 {
           margin:0 0 3mm;
           font-size:11pt;
-          color:#233159;
+          color:#4c1d95;
         }
+
         .rp-fulltext {
-          background:#fff;
+          background:#ffffff;
           border:1px solid #e5e8ef;
-          border-radius:10px;
+          border-radius:12px;
           padding:6mm;
         }
         .rp-fulltext .legend {
@@ -2365,7 +2455,12 @@ const saveAsPDFSimple = async () => {
           line-height:1.8;
           isolation:isolate;
         }
-        .error-token, .ai-token, .policy-block, .policy-warn, .keyword-token, .term-token{
+
+        /* 하이라이트 토큰 – 글핏 퍼플 테마 (오류/심의만 공통 처리) */
+        .error-token,
+        .ai-token,
+        .policy-block,
+        .policy-warn {
           position:relative;
           z-index:1;
           color:#111 !important;
@@ -2377,29 +2472,45 @@ const saveAsPDFSimple = async () => {
           box-decoration-break:clone;
           -webkit-box-decoration-break:clone;
         }
+
+        /* 맞춤법/문맥 오류 – 옅은 노랑 + 빨간 점선 */
         .error-token {
-          box-shadow: inset 0 -0.72em #fff1c2;
-          border-bottom:2px dashed #d33;
+          box-shadow: inset 0 -0.72em #fef3c7;
+          border-bottom:2px dashed #e11d48;
         }
+
+        /* AI 의심 – 연보라 밑줄 */
         .ai-token {
-          box-shadow: inset 0 -0.72em #ffe1e1;
-          border-bottom:2px dashed #b22;
+          box-shadow: inset 0 -0.72em #ede9fe;
+          border-bottom:2px dashed #7c3aed;
         }
+
+        /* 심의 금지 표현 – 강한 빨간 밑줄 */
         .policy-block {
-          box-shadow: inset 0 -0.72em #ffd2d2;
-          border-bottom:2px solid #d10000;
+          box-shadow: inset 0 -0.72em #fee2e2;
+          border-bottom:2px solid #b91c1c;
         }
+
+        /* 심의 주의 표현 – 주황색 */
         .policy-warn {
-          box-shadow: inset 0 -0.72em #fff3cd;
-          border-bottom:2px solid #cc9a00;
+          box-shadow: inset 0 -0.72em #fef3c7;
+          border-bottom:2px solid #d97706;
         }
+
+        /* 키워드/단어찾기 – 텍스트만 강조 (색 + 굵기) */
         .keyword-token {
-          box-shadow: inset 0 -0.72em #d0f0ff;
-          border-bottom:2px solid #3399cc;
+          box-shadow: none;
+          border-bottom: none;
+          font-weight: 700;
+          color: #1d4ed8 !important;
         }
+
+        /* 필수용어/핵심용어 – 텍스트만 강조 (색 + 굵기) */
         .term-token {
-          box-shadow: inset 0 -0.72em #dfffe0;
-          border-bottom:2px solid #2c9955;
+          box-shadow: none;
+          border-bottom: none;
+          font-weight: 700;
+          color: #15803d !important;
         }
       `;
       const styleEl = document.createElement("style");
@@ -4407,108 +4518,207 @@ if (!token && !guestMode) {
 
 // ========= 렌더 =========
 return (
-  <>
-    {/* ==== 상단 로그인/계정 바 ==== */}
+  <div
+    style={{
+      minHeight: "100vh",
+      padding: "24px 0 40px",
+      background:
+        "linear-gradient(180deg, #0f172a 0%, #1e293b 40%, #020617 100%)",
+      backgroundImage:
+        "url('/glefit-winter.png'), " +
+        "radial-gradient(circle at 0 0, rgba(148,163,184,0.16) 0, transparent 55%)," +
+        "radial-gradient(circle at 100% 0, rgba(56,189,248,0.16) 0, transparent 55%)",
+      backgroundSize: "cover",
+      backgroundPosition: "center top",
+      backgroundRepeat: "no-repeat",
+    }}
+  >
+    {/* 눈 내리는 효과 오버레이 */}
+    <div className="glefit-snow-overlay" aria-hidden="true">
+      {Array.from({ length: 80 }).map((_, idx) => (
+        <span
+          key={idx}
+          className="glefit-snowflake"
+          style={{
+            left: `${Math.random() * 100}%`,
+            fontSize: `${8 + Math.random() * 8}px`,
+            animationDelay: `${Math.random() * 10}s`,
+            animationDuration: `${10 + Math.random() * 10}s`,
+            opacity: 0.35 + Math.random() * 0.4,
+          }}
+        >
+          ✶
+        </span>
+      ))}
+    </div>
+
+    <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+
+{/* ==== 상단 로그인/계정 바 ==== */}
     <div
       style={{
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: "8px 10px",
-        margin: "10px auto",
+        padding: "12px 18px",
+        margin: "14px auto 10px",
         maxWidth: 1400,
-        background: "#0f172a",
-        color: "#fff",
-        borderRadius: 8,
+        background: "linear-gradient(90deg, #4c1d95, #7c3aed)",
+        color: "#f9fafb",
+        borderRadius: 12,
+        boxShadow: "0 10px 25px rgba(15,23,42,0.22)",
         position: "relative",
       }}
     >
-{/* 가운데 공지(항상 중앙 고정) */}
-{(notice || (isAdmin && notice === "")) && (
-  <div
-    style={{
-      position: "absolute",
-      left: "50%",
-      transform: "translateX(-50%)",
-      top: 8,
-      maxWidth: 700,
-      textAlign: "center",
-      padding: "4px 10px",
-      borderRadius: 6,
-      background: "rgba(255,255,255,0.12)",
-      backdropFilter: "blur(2px)",
-      fontSize: 13,
-      lineHeight: 1.4,
-      pointerEvents: "none", // 가운데 공지가 좌/우 클릭을 막지 않도록
-    }}
-    title={isAdmin ? "관리자는 공지 옆 [수정]으로 변경 가능" : undefined}
-  >
-    <span style={{ pointerEvents: "auto" }}>
-      {notice || (isAdmin ? "공지(비어 있음)" : "")}
-      {/* 관리자만 보이는 수정 링크 */}
-      {isAdmin && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            const v = window.prompt("상단 공지 내용을 입력하세요:", notice || "");
-            if (v != null) setNotice(v.trim());
-          }}
-          style={{
-            marginLeft: 8,
-            padding: "2px 6px",
-            borderRadius: 4,
-            border: "1px solid #cfe2ff",
-            background: "#1f2a44",
-            color: "#fff",
-            cursor: "pointer",
-            pointerEvents: "auto", // 버튼은 클릭 가능
-          }}
-        >
-          수정
-        </button>
-      )}
-    </span>
-  </div>
-)}
-      <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-        {me ? (
-          <>
-            {me.username}
-            <span
-              style={{
-                fontSize: 12,
-                padding: "2px 6px",
-                borderRadius: 999,
-                background: isAdmin ? "#dcfce7" : "#e5e7eb",
-                color: isAdmin ? "#14532d" : "#374151",
-                border: isAdmin ? "1px solid #86efac" : "1px solid #d1d5db"
-              }}
-            >
-              {isAdmin ? "관리자" : "일반"}
-            </span>
-            {" · 만료 "}
-{me?.paid_until?.slice(0, 10)}
-{typeof me?.remaining_days === "number" && (
-  <>
-    <span>{` (${me.remaining_days}일 남음)`}</span>
-    <div style={{ marginTop: 6, width: 160, height: 6, background: "rgba(255,255,255,0.18)", borderRadius: 6, overflow: "hidden" }}>
+    {/* 가운데 공지(항상 중앙 고정) */}
+    {(notice || (isAdmin && notice === "")) && (
       <div
         style={{
-          height: "100%",
-          width: `${Math.max(0, Math.min(100, (me.remaining_days_ratio ?? (me.remaining_days/30))*100))}%`,
-          background: "#22c55e"
+          position: "absolute",
+          left: "50%",
+          transform: "translateX(-50%)",
+          top: 6,                // ⬅ 살짝 위로 올리기 (10 → 6)
+          maxWidth: 720,
+          textAlign: "center",
+          padding: "8px 14px",   // ⬅ 좌우 여백 아주 조금 축소 (18 → 14)
+          borderRadius: 999,
+          background: "#ffffff",
+          border: "1px solid rgba(148,163,184,0.7)",
+          boxShadow: "0 8px 24px rgba(15,23,42,0.35)",
+          fontSize: 14,
+          fontWeight: 500,
+          color: "#0f172a",
+          lineHeight: 1.5,
+          pointerEvents: "none",
+          zIndex: 3,
         }}
-        title="남은일수 비율(대략치)"
-      />
-    </div>
-  </>
-)}
+        title={isAdmin ? "관리자는 공지 옆 [수정]으로 변경 가능" : undefined}
+      >
+        <span style={{ pointerEvents: "auto" }}>
+          {notice || (isAdmin ? "공지(비어 있음)" : "")}
+          {/* 관리자만 보이는 수정 링크 */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                const v = window.prompt("상단 공지 내용을 입력하세요:", notice || "");
+                if (v != null) setNotice(v.trim());
+              }}
+              style={{
+                marginLeft: 8,
+                padding: "2px 8px",
+                borderRadius: 6,
+                border: "1px solid #cbd5f5",
+                background: "#111827",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12,
+                pointerEvents: "auto", // 버튼은 클릭 가능
+              }}
+            >
+              수정
+            </button>
+          )}
+        </span>
+      </div>
+    )}
+      <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 12 }}>
+        {/* 좌: 글핏 겨울 로고/타이틀 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              border: "2px solid rgba(248,250,252,0.9)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 16,
+              fontWeight: 800,
+            }}
+          >
+            G
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+            <span style={{ fontSize: 14, fontWeight: 700 }}>글핏 작업실</span>
+            <span style={{ fontSize: 12, opacity: 0.9 }}>
+              모든 글의 검수 도구
+            </span>
+          </div>
+        </div>
 
-          </>
-        ) : (
-          "계정 정보 불러오는 중…"
-        )}
+        {/* 구분선 */}
+        <div
+          style={{
+            width: 1,
+            height: 20,
+            margin: "0 8px",
+            background: "rgba(248,250,252,0.35)",
+          }}
+        />
+
+        {/* 우: 계정/만료 정보 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {me ? (
+            <>
+              {me.username}
+              <span
+                style={{
+                  fontSize: 12,
+                  padding: "2px 6px",
+                  borderRadius: 999,
+                  background: isAdmin ? "#dcfce7" : "#e5e7eb",
+                  color: isAdmin ? "#14532d" : "#374151",
+                  border: isAdmin ? "1px solid #86efac" : "1px solid #d1d5db",
+                }}
+              >
+                {isAdmin ? "관리자" : "일반"}
+              </span>
+              <span>
+                {" · 만료 "}
+                {me?.paid_until?.slice(0, 10)}
+              </span>
+
+              {typeof me?.remaining_days === "number" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 12 }}>
+                    ({me.remaining_days}일 남음)
+                  </span>
+                  <div
+                    style={{
+                      marginTop: 2,
+                      width: 160,
+                      height: 6,
+                      background: "rgba(15,23,42,0.25)",
+                      borderRadius: 6,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            (me.remaining_days_ratio ??
+                              me.remaining_days / 30) * 100
+                          )
+                        )}%`,
+                        background: "#22c55e",
+                      }}
+                      title="남은일수 비율(대략치)"
+                    />
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            "계정 정보 불러오는 중…"
+          )}
+        </div>
       </div>
 
       <button
@@ -4527,32 +4737,47 @@ return (
       </button>
     </div>
 
-    {/* ==== 기존 그리드 레이아웃 ==== */}
+{/* ==== 기존 그리드 레이아웃 ==== */}
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "420px 1fr 380px", // 좌/중/우 고정
+        gridTemplateColumns:
+          // 좌 / 중 / 우 최소폭을 줄여서 작은 화면에서도 안 밀리게
+          "minmax(320px, 1.2fr) minmax(320px, 1.3fr) minmax(320px, 1.0fr)",
         columnGap: 16,
-        height: 720,
+        alignItems: "flex-start",
         maxWidth: 1400,
-        margin: "0 auto",
+        margin: "0 auto 24px",
+        padding: "0 4px 8px",
         boxSizing: "border-box",
       }}
     >
       {/* 좌측: 원문 입력 + 업로드 */}
-      <div style={{ flex: 1.25, padding: 16, background: "#fff", border: "1px solid #ddd", borderRadius: 8 }}>
+      <div
+        style={{
+          flex: 1.25,
+          padding: 16,
+          background: "#ffffff",
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          boxShadow: "0 10px 30px rgba(15,23,42,0.08)",
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+        }}
+      >
         <h3>✍ 원문 입력(최대50건 내)</h3>
 
         <div
           onDrop={handleDrop}
           onDragOver={handleDragOver}
           style={{
-            border: "2px dashed #aaa",
+            border: "2px dashed #cbd5f5",
             padding: 16,
             marginBottom: 12,
             textAlign: "center",
-            borderRadius: 8,
-            background: "#f9f9f9",
+            borderRadius: 10,
+            background: "#f9fafb",
           }}
         >
           <p style={{ margin: 0 }}>
@@ -4785,19 +5010,56 @@ return (
         </div>
       </div>
 
-      {/* 중앙: 하이라이트 + 단어찾기(아래) */}
-      <div style={{ flex: 1.1, padding: 16, background: "#fafafa", border: "1px solid #ddd", borderRadius: 8 }}>
+{/* 중앙: 하이라이트 + 단어찾기(아래) */}
+      <div
+        style={{
+          flex: 1.1,
+          padding: 16,
+          background: "#f9fafb",
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          boxShadow: "0 10px 30px rgba(15,23,42,0.06)",
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-  <h3 style={{ margin: 0 }}> 📄 검사(간헐적 양식 깨짐 현상 검사 후 복원됩니다.)</h3>
-  <label style={{ fontSize: 12, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}>
-    <input
-      type="checkbox"
-      checked={wrapLongLines}
-      onChange={(e) => setWrapLongLines(e.target.checked)}
-    />
-    긴 줄 자동 줄바꿈
-  </label>
-</div>
+          {/* 제목 + 작은 안내 문구(아래) */}
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <h3 style={{ margin: 0 }}>📄 중앙 검사 화면</h3>
+            <span
+              style={{
+                marginTop: 2,
+                fontSize: 11,
+                color: "#64748b",
+                fontWeight: 400,
+              }}
+            >
+              (간헐적 양식 깨짐 현상 검사 후 복원됩니다.)
+            </span>
+          </div>
+
+          {/* 오른쪽 끝: 자동 줄바꿈 토글 */}
+          <label
+            style={{
+              marginLeft: "auto",       // ▶ 오른쪽으로 밀기
+              fontSize: 12,
+              fontWeight: 500,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              whiteSpace: "nowrap",     // 한 줄 유지
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={wrapLongLines}
+              onChange={(e) => setWrapLongLines(e.target.checked)}
+            />
+            자동 줄바꿈
+          </label>
+        </div>
 
         <div
           id="highlight-view"
@@ -4806,6 +5068,7 @@ return (
             border: "1px solid #eee",
             padding: 12,
             overflowY: "auto",
+            overflowX: "auto",              // ✅ 가로 스크롤 추가
             background: "#fff",
             fontSize: 16,
             whiteSpace: wrapLongLines ? "pre-wrap" : "pre",
@@ -4876,9 +5139,28 @@ return (
       </div>
 
       {/* 우측 컬럼: 추천항목(위) + 중복문장 탐지(아래, 바깥 박스) */}
-      <div style={{ width: 380, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        style={{
+          // ⬇ 고정 폭(380px) 때문에 오른쪽으로 밀리던 현상 → 유연한 폭으로 변경
+          width: "100%",
+          maxWidth: 340,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+          alignSelf: "stretch",
+        }}
+      >
+
 {/* ───────── 박스 #1: 추천 항목 ───────── */}
-<div style={{ padding: 16, background: "#f8f9fa", border: "1px solid #ddd", borderRadius: 8 }}>
+<div
+  style={{
+    padding: 16,
+    background: "#f9fafb",
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
+  }}
+>
   <h3>✅ 추천 항목</h3>
 
   <label style={{ display: "block", margin: "6px 0 10px" }}>
@@ -4987,7 +5269,15 @@ onClick={() => {
 </div>
 
 {/* ───────── 박스 #2: 중복문장/유사 탐지 (추천항목 ‘밖에’ 있는 별도 박스) ───────── */}
-<div style={{ padding: 16, background: "#eef6ff", border: "1px solid #cfe2ff", borderRadius: 8 }}>
+<div
+  style={{
+    padding: 16,
+    background: "#f5f3ff",
+    border: "1px solid #e5defe",
+    borderRadius: 12,
+    boxShadow: "0 10px 24px rgba(15,23,42,0.06)",
+  }}
+>
   <h3 style={{ marginTop: 0 }}>🔁 중복문장·유사 탐지</h3>
 
   {/* 한 문서 내 */}
@@ -5275,29 +5565,79 @@ onClick={() => {
   .error-token,
   .ai-token,
   .policy-block,
-  .policy-warn,
-  .keyword-token,
-  .term-token {
+  .policy-warn {
     position: relative;
     z-index: 1;
     color: #111 !important;
     -webkit-text-fill-color: #111;
-    -webkit-text-stroke: 0.2px rgba(0,0,0,0.6); /* 윤곽선 보강 */
+    -webkit-text-stroke: 0.2px rgba(0,0,0,0.6);
     text-shadow: 0 0 0 #111;
     mix-blend-mode: normal !important;
-    background: none !important; /* 배경색 직접 칠하지 않음 */
-    box-decoration-break: clone; /* 여러 줄에서도 동일 적용 */
+    background: none !important;
+    box-decoration-break: clone;
     -webkit-box-decoration-break: clone;
   }
 
-  /* 형광펜 방식(배경 대체): inset box-shadow 로 아래쪽을 채움 */
-  .error-token { box-shadow: inset 0 -0.72em #fff1c2; border-bottom: 2px dashed #d33; }
-  .ai-token { box-shadow: inset 0 -0.72em #ffe1e1; border-bottom: 2px dashed #b22; }
-  .policy-block { box-shadow: inset 0 -0.72em #ffd2d2; border-bottom: 2px solid #d10000; }
-  .policy-warn { box-shadow: inset 0 -0.72em #fff3cd; border-bottom: 2px solid #cc9a00; }
-  .keyword-token { box-shadow: inset 0 -0.72em #d0f0ff; border-bottom: 2px solid #3399cc; }
-  .term-token { box-shadow: inset 0 -0.72em #dfffe0; border-bottom: 2px solid #2c9955; }
-  `}</style>
- </>
-);
+  /* 글핏 테마 형광펜 (inset box-shadow) */
+  .error-token {
+    box-shadow: inset 0 -0.72em #fef3c7;
+    border-bottom: 2px dashed #e11d48;
+  }
+  .ai-token {
+    box-shadow: inset 0 -0.72em #ede9fe;
+    border-bottom: 2px dashed #7c3aed;
+  }
+  .policy-block {
+    box-shadow: inset 0 -0.72em #fee2e2;
+    border-bottom: 2px solid #b91c1c;
+  }
+  .policy-warn {
+    box-shadow: inset 0 -0.72em #fff7ed;
+    border-bottom: 2px solid #d97706;
+  }
+  .keyword-token {
+    box-shadow: none;
+    border-bottom: none;
+    font-weight: 700;
+    color: #1d4ed8 !important;
+  }
+  .term-token {
+    box-shadow: none;
+    border-bottom: none;
+    font-weight: 700;
+    color: #15803d !important;
+  }
+`}</style>
+
+      {/* 눈 내리는 효과 스타일 */}
+      <style>{`
+        .glefit-snow-overlay {
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: 4; /* 상단바/카드 위에 살짝 */
+        }
+        .glefit-snowflake {
+          position: absolute;
+          top: -10%;
+          color: rgba(255,255,255,0.95);
+          text-shadow: 0 0 6px rgba(15,23,42,0.45);
+          animation-name: glefit-snow-fall;
+          animation-timing-function: linear;
+          animation-iteration-count: infinite;
+        }
+        @keyframes glefit-snow-fall {
+          0% {
+            transform: translate3d(0, -10%, 0);
+          }
+          100% {
+            transform: translate3d(0, 110vh, 0);
+          }
+        }
+      `}</style>
+
+      </div>
+    </div>
+  );
 }
