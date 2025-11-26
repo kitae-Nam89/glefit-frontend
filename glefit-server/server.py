@@ -1514,6 +1514,8 @@ def _head_guard():
 ALLOWED_ORIGINS = [
     # 기존 Vercel 기본 도메인
     "https://glefit-frontend.vercel.app",
+    # 실제 배포 중인 Vercel 프로젝트 도메인
+    "https://glefit-frontend-esvo.vercel.app",
 
     # 새 커스텀 도메인
     "https://glefit.kr",
