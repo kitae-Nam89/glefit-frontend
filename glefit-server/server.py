@@ -144,7 +144,7 @@ def _boot_seed_admin():
         from datetime import datetime, timedelta
         # passlib 해시를 전역에서: from passlib.hash import pbkdf2_sha256 as bcrypt
 
-        admin_user = (os.getenv("ADMIN_USER") or "").strip()
+        admin_user = normalize_username(os.getenv("ADMIN_USER") or "")
         admin_pass = (os.getenv("ADMIN_PASS") or "").strip()
         admin_days = int(os.getenv("ADMIN_DAYS") or 0)
         if not admin_user or not admin_pass or admin_days <= 0:
@@ -1613,13 +1613,54 @@ def guide_forbid_check():
 @app.route("/auth/login", methods=["POST"])
 def auth_login():
     payload = request.get_json(force=True, silent=True) or {}
-    username = (payload.get("username") or "").strip()
+
+    # 🔹 username을 normalize해서 대소문자·공백 문제 제거
+    raw_username = payload.get("username") or ""
+    username = normalize_username(raw_username)
     password = payload.get("password") or ""
+
     u = _get_user(username)
+
+    # 아이디 or 비밀번호 틀림
     if not u or not bcrypt.verify(password, u["password_hash"]):
-        return jsonify({"error":"Bad credentials"}), 401
-    if not _is_paid_and_active(u):
-        return jsonify({"error":"Payment required", "code":"PAYMENT"}), 402
+        return jsonify({"error": "Bad credentials"}), 401
+
+    # 🔹 관리자(admin)는 결제/기간 체크 없이 항상 로그인 허용
+    if u.get("role") != "admin" and not _is_paid_and_active(u):
+        return jsonify({"error": "Payment required", "code": "PAYMENT"}), 402
+
+    # (이 아래는 기존 그대로)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT token_version, allow_concurrent FROM users WHERE username=?", (username,))
+    row = cur.fetchone()
+    cur_ver = int((row[0] if row else 0) or 0)
+    allow_concurrent = bool(row[1]) if row and row[1] is not None else False
+
+    if allow_concurrent:
+        new_ver = cur_ver
+        new_jti = ""
+    else:
+        new_ver = cur_ver + 1
+        new_jti = str(uuid.uuid4())
+        cur.execute(
+            "UPDATE users SET token_version=?, last_jti=? WHERE username=?",
+            (new_ver, new_jti, username)
+        )
+        conn.commit()
+    conn.close()
+
+    token = jwt.encode({
+        "sub": u["username"],
+        "role": u["role"],
+        "ver": new_ver,
+        "jti": new_jti,
+        "exp": datetime.utcnow() + timedelta(hours=12)
+    }, JWT_SECRET, algorithm=JWT_ALG)
+
+    log_usage(username, "login", 0)
+
+    return jsonify({"access_token": token, "token_type": "bearer"})
 
         # (단일 로그인용 버전/토큰ID 업데이트) — 동시접속 허용 계정은 예외
     conn = sqlite3.connect(DB_PATH)

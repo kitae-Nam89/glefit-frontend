@@ -35,6 +35,9 @@ const API_BASE =
      ? "http://127.0.0.1:5000"
      : "https://glefit.onrender.com");
 
+// 🔍 실제 사용 중인 API_BASE 확인용 디버그 로그
+console.log("🔥 API_BASE =", API_BASE);
+
 // 3) axios baseURL 적용⚠️ axios import는 파일 상단 import 구역에 있어야 함)
 axios.defaults.baseURL = API_BASE;
 
