@@ -470,14 +470,14 @@ def require_user(fn):
         # 단일 로그인 강제: 동시접속 허용이 아닐 때만 버전/JTI 검증
         if not allow_concurrent:
             if tok_ver != db_ver or (db_jti and tok_jti != db_jti):
-                return jsonify({"error":"Session invalidated. Please log in again.", "code":"SESSION"}), 401
+                return jsonify({
+                    "error": "Session invalidated. Please log in again.",
+                    "code": "SESSION"
+                }), 401
 
-        # 도메인 제한(옵션)
-        if site_url:
-            origin  = (request.headers.get("Origin") or "").lower()
-            referer = (request.headers.get("Referer") or "").lower()
-            if site_url.lower() not in origin and site_url.lower() not in referer:
-                return jsonify({"error":"Origin not allowed"}), 403
+        # 2025-11-26: 도메인 제한(site_url 기반)은 일단 비활성화
+        # - 도메인 제어는 CORS(ALLOWED_ORIGINS)에서만 처리
+        # - glefit.kr / www.glefit.kr / vercel / localhost 모두 같은 API 사용
 
         return fn(*args, **kwargs)
     return wrapper
@@ -1510,9 +1510,16 @@ def _head_guard():
     if request.method == "HEAD":
         return ("", 200, {"Content-Type": "text/plain; charset=utf-8"})
 
-# 2) CORS (프리뷰/터널/로컬 허용)
+# 2) CORS (프리뷰/터널/로컬/커스텀 도메인 허용)
 ALLOWED_ORIGINS = [
+    # 기존 Vercel 기본 도메인
     "https://glefit-frontend.vercel.app",
+
+    # 새 커스텀 도메인
+    "https://glefit.kr",
+    "https://www.glefit.kr",
+
+    # 그 외 Vercel 프리뷰 / 클라우드플레어 / 로컬
     re.compile(r"https://.*\.vercel\.app"),
     re.compile(r"https://.*\.trycloudflare\.com"),
     "http://localhost:3000",
