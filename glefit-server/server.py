@@ -1510,63 +1510,12 @@ def _head_guard():
     if request.method == "HEAD":
         return ("", 200, {"Content-Type": "text/plain; charset=utf-8"})
 
-# 2) CORS (프리뷰/터널/로컬/커스텀 도메인 허용)
-ALLOWED_ORIGINS = [
-    # 기존 Vercel 기본 도메인
-    "https://glefit-frontend.vercel.app",
-    # 실제 배포 중인 Vercel 프로젝트 도메인
-    "https://glefit-frontend-esvo.vercel.app",
-
-    # 새 커스텀 도메인
-    "https://glefit.kr",
-    "https://www.glefit.kr",
-
-    # 그 외 Vercel 프리뷰 / 클라우드플레어 / 로컬
-    re.compile(r"https://.*\.vercel\.app"),
-    re.compile(r"https://.*\.trycloudflare\.com"),
-    "http://localhost:3000",
-]
+# 2) CORS – 일단 전부 허용해서 CORS 에러 제거
 CORS(
     app,
-    resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+    resources={r"/*": {"origins": "*"}},
     supports_credentials=True,
-    allow_headers=["*"],
-    expose_headers=["*"],
 )
-# 🔧 CORS가 확실히 붙도록 after_request에서 한 번 더 강제
-def _origin_allowed(origin: str) -> bool:
-    if not origin:
-        return False
-    for pat in ALLOWED_ORIGINS:
-        if isinstance(pat, str):
-            if pat == origin:
-                return True
-        else:
-            try:
-                if pat.match(origin):
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-@app.after_request
-def _add_cors_headers(resp):
-    origin = request.headers.get("Origin", "")
-    if _origin_allowed(origin):
-        # 요청한 Origin 그대로 허용
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Vary"] = "Origin"
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-
-        # 프리플라이트용 헤더/메서드 보강
-        if "Access-Control-Allow-Headers" not in resp.headers:
-            req_hdrs = request.headers.get("Access-Control-Request-Headers", "*")
-            resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "*"
-        if "Access-Control-Allow-Methods" not in resp.headers:
-            resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
-
-    return resp
 
 # 3) 루트 & 헬스 — 단일 정의만 유지
 @app.route("/", methods=["GET", "HEAD"])
