@@ -1533,6 +1533,40 @@ CORS(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+# 🔧 CORS가 확실히 붙도록 after_request에서 한 번 더 강제
+def _origin_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    for pat in ALLOWED_ORIGINS:
+        if isinstance(pat, str):
+            if pat == origin:
+                return True
+        else:
+            try:
+                if pat.match(origin):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+@app.after_request
+def _add_cors_headers(resp):
+    origin = request.headers.get("Origin", "")
+    if _origin_allowed(origin):
+        # 요청한 Origin 그대로 허용
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+
+        # 프리플라이트용 헤더/메서드 보강
+        if "Access-Control-Allow-Headers" not in resp.headers:
+            req_hdrs = request.headers.get("Access-Control-Request-Headers", "*")
+            resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "*"
+        if "Access-Control-Allow-Methods" not in resp.headers:
+            resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+
+    return resp
 
 # 3) 루트 & 헬스 — 단일 정의만 유지
 @app.route("/", methods=["GET", "HEAD"])
