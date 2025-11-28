@@ -825,10 +825,25 @@ async function decodeTxtBest(arrayBuffer) {
 
 
   // 🔴 파일별 캐시 구조 확장
-  // fileResults[fileName] = { text, verify:[], policy:[], highlightedHTML, aiSummary }
+  // fileResults[fileName] = {
+  //   text,
+  //   verify: [],
+  //   policy: [],
+  //   highlightedHTML,
+  //   aiSummary,
+  //   required,          // 필수가이드 결과
+  //   intraExactGroups,  // 한 문서 중복 검사(완전 일치)
+  //   intraSimilarPairs, // 한 문서 중복 검사(유사 문장)
+  //   aiLocal,           // 로컬 AI 탐지(v1) 결과 (예비필터)
+  // }
   const [fileResults, setFileResults] = useState({});
   const [isChecking, setIsChecking] = useState(false);
   const [currentBatchIndex, setCurrentBatchIndex] = useState(0);
+
+  // 로컬 AI 탐지(v1) 상태
+  const [aiLocalLoading, setAiLocalLoading] = useState(false);
+  const [aiLocalResult, setAiLocalResult] = useState(null);
+  const [aiLocalError, setAiLocalError] = useState("");
 
   // 키워드(파일명 자동 채움, **세션 내 파일별 유지**)
   const [keywordInput, setKeywordInput] = useState("");
@@ -1064,6 +1079,15 @@ const loadFileContent = async (file, idx = null) => {
     setResults([]);
     setHighlightedHTML("");
     setAiSummary(null);
+  }
+
+  // 📌 파일이 바뀔 때: 파일별로 저장된 로컬 AI 탐지 결과를 복원 (없으면 초기화)
+  if (cached && cached.aiLocal) {
+    setAiLocalResult(cached.aiLocal);
+    setAiLocalError("");
+  } else {
+    setAiLocalResult(null);
+    setAiLocalError("");
   }
 
 // ❌ 기존: 파일 이동시 중복결과/필수가이드 모두 초기화됨 → 문제 발생
@@ -1706,7 +1730,7 @@ const handlePolicyCheck = async () => {
         (r.original || "").length > 0
     );
 
-    const merged = mergeResultsPositionAware(filtered);
+   const merged = mergeResultsPositionAware(filtered);
     setResults(merged);
     setAiSummary(null);
 
@@ -1735,6 +1759,50 @@ const handlePolicyCheck = async () => {
     alert("심의 검사 실패: " + (e?.message || "Unknown error"));
   } finally {
     setIsChecking(false);
+  }
+};
+
+// ✅ 로컬 AI 탐지(v1) – 실제 핸들러
+const handleAiLocalDetect = async () => {
+  if (!text || !text.trim()) {
+    alert("검사할 원고가 비어 있습니다.");
+    return;
+  }
+
+  try {
+    setAiLocalLoading(true);
+    setAiLocalError("");
+    setAiLocalResult(null);
+
+    // 서버의 /ai_local_detect 엔드포인트 호출
+    const res = await axios.post(`${API_BASE}/ai_local_detect_v2`, { text });
+    const data = res.data || {};
+
+    // 통일: { ok:bool, score:number, label:str, message:str } 형태 가정
+    if (data.ok === false && data.error) {
+      setAiLocalError(data.error);
+    } else {
+      setAiLocalResult(data);
+
+      // 📌 현재 파일 기준으로 로컬 AI 탐지 결과를 파일별 캐시에 저장
+      if (files && fileIndex >= 0 && files[fileIndex]) {
+        const curFile = files[fileIndex];
+        setFileResults((prev) => ({
+          ...prev,
+          [curFile.name]: {
+            ...(prev[curFile.name] || {}),
+            aiLocal: data,
+          },
+        }));
+      }
+    }
+  } catch (e) {
+    console.error("ai_local_detect 실패:", e);
+    const msg = e?.response?.data?.error || e?.message || "알 수 없는 오류";
+    setAiLocalError(msg);
+    alert("AI 탐지(v1) 실패: " + msg);
+  } finally {
+    setAiLocalLoading(false);
   }
 };
 
@@ -4872,28 +4940,46 @@ return (
   title={isAdmin ? "맞춤법·문맥 검사 실행" : "관리자 전용 기능입니다"}
   style={!isAdmin ? lockedBtnStyle : undefined}      // ← 여기
 >
-  {!isAdmin ? "🔒 개별 검사(관리자전용)" : "맞춤법·문맥"}
+  {!isAdmin ? "🔒 개별(관리자)" : "맞춤법·문맥"}
 </button>
 
-  {/* ✅ 심의 — 게스트만 잠금 (관리자/일반 가능) */}
-  <button
-    onClick={!isGuest ? handlePolicyCheck : undefined}
-    disabled={isGuest}
-    title={isGuest ? "체험(게스트)에서는 사용이 제한됩니다." : "심의(광고/의료 규정) 검사 실행"}
-    style={isGuest ? lockedBtnStyle : undefined}
-  >
-    {isGuest ? "🔒 심의(게스트 제한)" : "심의"}
-  </button>
+          {/* ✅ 심의 — 게스트만 잠금 (관리자/일반 가능) */}
+          <button
+            onClick={!isGuest ? handlePolicyCheck : undefined}
+            disabled={isGuest}
+            title={isGuest ? "체험(게스트)에서는 사용이 제한됩니다." : "심의 규정 기반 표현 검토"}
+            style={isGuest ? lockedBtnStyle : undefined}
+          >
+            심의(표현/위험어)
+          </button>
 
-  {/* ✅ 전체검사 — 관리자만 (일반/게스트 잠금) */}
-  <button
-  onClick={isAdmin ? handleBatchCheck : undefined}
-  disabled={!isAdmin}                                // ← 여기
-  title={isAdmin ? "업로드된 모든 파일을 순차 검사" : "관리자 전용 기능입니다"}
-  style={!isAdmin ? lockedBtnStyle : undefined}      // ← 여기
->
-  {!isAdmin ? "🔒 전체 검사(관리자전용)" : "전체검사"}
-</button>
+          {/* ✅ 로컬 AI 탐지(v1) – 서버 비용 없이 휴리스틱 기반 */}
+          <button
+            onClick={!isGuest ? handleAiLocalDetect : undefined}
+            disabled={isGuest || aiLocalLoading}
+            title={
+              isGuest
+                ? "체험(게스트)에서는 사용이 제한됩니다."
+                : "정확한 결과가 아니며 AI패턴 검사로 참고용입니다./점수가 낮을 수록 ai에 가까운 결과"
+            }
+            style={isGuest ? lockedBtnStyle : undefined}
+          >
+            {aiLocalLoading ? "AI 탐지 중…" : "AI 탐지(참고용)"}
+          </button>
+
+          {/* ✅ 전체 검사(배치) */}
+          <button
+            onClick={!isGuest ? handleBatchCheck : undefined}
+            disabled={isGuest}
+            title={
+              isGuest
+                ? "체험(게스트)에서는 사용이 제한됩니다."
+                : "현재 업로드된 전체 파일 한 번에 검사"
+            }
+            style={isGuest ? lockedBtnStyle : undefined}
+          >
+            전체(배치)
+          </button>
 
 
           {/* ✅ 저장류 — 로그인 사용자만 허용 (게스트 잠금) */}
@@ -4950,6 +5036,72 @@ return (
           >
             <b>AI 가능성 요약</b> — 평균: <b>{aiSummary.avgProb}</b>, 고위험 문장: <b>{aiSummary.highRiskCount}</b> / 총{" "}
             <b>{aiSummary.totalSentences}</b>
+          </div>
+        )}
+
+{aiLocalResult && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: 8,
+              borderRadius: 6,
+              background: "#fefce8",
+              border: "1px solid #facc15",
+              fontSize: 13,
+              lineHeight: 1.5,
+            }}
+          >
+            <b>AI 탐지(v1 · 로컬)</b>
+            {typeof aiLocalResult.score === "number" && (
+              <>
+                {" — 점수: "}
+                <b>{aiLocalResult.score}</b>
+                {(() => {
+                  const s = aiLocalResult.score;
+                  let label = "";
+                  let msg = "";
+
+                  if (s <= 7) {
+                    label = "AI 의심(예비필터)";
+                    msg =
+                      "이 글은 로컬 기준에서 AI 작성 가능성이 높습니다. 중요한 글이라면 GPTZero·카피킬러 등 외부 탐지를 한 번 더 권장합니다.";
+                  } else if (s <= 14) {
+                    label = "경계 구간(혼합/의심)";
+                    msg =
+                      "일부 AI 패턴이 보이지만 단정하기 어렵습니다. 중요도에 따라 외부 탐지를 선택적으로 사용해도 좋습니다.";
+                  } else {
+                    label = "사람 글에 가까움";
+                    msg =
+                      "로컬 기준에서는 사람 글 패턴이 더 강하게 보입니다. 단, 이 결과만으로 확정 판정은 불가능합니다.";
+                  }
+
+                  return (
+                    <>
+                      {" ("}
+                      {label}
+                      {")"}
+                      <div style={{ marginTop: 4 }}>{msg}</div>
+                    </>
+                  );
+                })()}
+              </>
+            )}
+          </div>
+        )}
+
+        {aiLocalError && (
+          <div
+            style={{
+              marginTop: 6,
+              padding: 6,
+              borderRadius: 4,
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              color: "#b91c1c",
+              fontSize: 12,
+            }}
+          >
+            AI 탐지 오류: {aiLocalError}
           </div>
         )}
 

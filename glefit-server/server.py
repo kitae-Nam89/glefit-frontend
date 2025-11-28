@@ -1532,7 +1532,7 @@ def health():
         "/auth/login","/auth/ping","/auth/me",
         "/admin/issue_user","/admin/set_active","/admin/reset_password",
         "/admin/list_users","/admin/delete_user",
-        "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local",
+        "/verify","/policy_verify","/dedup_intra","/dedup_inter","/spell/local","/ai_local_detect","/ai_local_detect_v2",
         "/guide_forbid_check","/guide_keyword_count","/guide_verify_local","/guide_verify_dedup"
     ]})
 
@@ -2383,6 +2383,255 @@ def spell_local():
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({"results": [], "error": str(e)}), 500
+
+# ============================
+# (NEW) AI 탐지(v1 · 로컬)
+# ============================
+@app.post("/ai_local_detect")
+@require_user
+def ai_local_detect():
+    """
+    v1 로컬 AI 탐지 – 완전 로컬 기반 휴리스틱 점수
+    반환 구조:
+      { ok:True, score:0.0~1.0, label:'human|mixed|ai', message:str }
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        text = (body.get("text") or "").strip()
+
+        if not text:
+            return jsonify({"ok": False, "error": "EMPTY_TEXT"}), 400
+
+        # === 1) 문장 분리 ===
+        spans = _sentence_spans(text)
+        sentences = [s for (_, _, s) in spans]
+
+        if not sentences:
+            return jsonify({"ok": False, "error": "NO_SENTENCE"}), 400
+
+        # === 2) 문장별 AI 패턴 스코어 ===
+        scores = []
+        for s in sentences:
+            n = _norm_for_dup(s)
+            toks = _ko_word_norm(s)
+
+            # 2-1) 문장 길이 균일성(기계적 리듬)
+            L = len(n)
+            len_score = 0
+            if 60 <= L <= 90:
+                len_score = 0.4
+            elif 40 <= L <= 110:
+                len_score = 0.2
+
+            # 2-2) 접속사/AI 전형 패턴 반복
+            ai_connect = ["또한", "한편", "따라서", "이러한", "그렇기에", "종합하면"]
+            connect_count = sum(s.count(c) for c in ai_connect)
+            connect_score = min(0.3, connect_count * 0.1)
+
+            # 2-3) "합니다."/"습니다." 반복 (AI 흔함)
+            rep_score = 0.25 if s.endswith(("습니다.", "합니다.")) else 0.0
+
+            # 2-4) 단어 다양성 부족(중복 단어 반복)
+            freq = {}
+            for t in toks:
+                freq[t] = freq.get(t, 0) + 1
+            dup_count = sum(1 for v in freq.values() if v >= 3)
+            dup_score = min(0.3, dup_count * 0.15)
+
+            # 총합
+            sent_score = len_score + connect_score + rep_score + dup_score
+            sent_score = min(1.0, sent_score)
+            scores.append(sent_score)
+
+        # === 3) 전체 평균 + 고위험 비율 ===
+        avg = sum(scores) / len(scores)
+        high = sum(1 for x in scores if x >= 0.7)
+
+        # === 4) 라벨 결정 – 임계값을 더 공격적으로 조정 ===
+        #  - avg 0.55 이상이거나, 고위험 문장이 1개 이상 + 전체의 30% 이상이면 AI로 간주
+        #  - 0.35~0.55 구간은 혼합/의심 구간
+        if avg >= 0.55 or high >= max(1, int(len(scores) * 0.3)):
+            label = "ai"
+            msg = "AI 작성 패턴에 꽤 가깝습니다. (로컬 휴리스틱 기준, 참고용입니다.)"
+        elif avg >= 0.35:
+            label = "mixed"
+            msg = "AI와 사람 패턴이 섞였거나, AI 영향이 일부 있는 문장으로 보입니다."
+        else:
+            label = "human"
+            msg = "사람이 쓴 글에 더 가까운 문체입니다. (역시 참고용입니다.)"
+
+        return jsonify({
+            "ok": True,
+            "score": round(avg, 3),
+            "label": label,
+            "message": msg,
+            "sentences": len(scores),
+            "high_risk": high,
+        })
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.post("/ai_local_detect_v2")
+@require_user
+def ai_local_detect_v2():
+    """
+    로컬 + 휴리스틱 강화 AI 탐지 v2 (예비 필터용)
+    - 토큰 길이 / TTR / 반복 bigram
+    - 문장 끝 어미(습니다/합니다 계열) + 접속사 반복 + 전체 길이 패턴까지 반영
+    - 결과 점수: 0~100, score ↑일수록 AI 가능성 ↑
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "")
+        text = text.strip()
+
+        if not text:
+            return jsonify({"ok": False, "error": "No text provided"}), 400
+
+        # 크기 제한 공통 적용
+        limit_resp = enforce_size_limit_or_400(text)
+        if limit_resp:
+            return limit_resp
+
+        # 0) 전처리 / 기본 단위
+        norm = kr_norm(text)
+
+        # --- 토큰화: 기존 tokenize + 한국어 폴백 ---
+        tokens = tokenize(norm)
+        # 기존 정규식이 한국어를 못 잡는 경우를 대비한 폴백
+        if not tokens:
+            # 한글/영문/숫자로 이루어진 덩어리를 전부 토큰으로 사용
+            tokens = re.findall(r"[가-힣A-Za-z0-9]+", norm)
+
+        n_tokens = len(tokens)
+        sentences = basic_kr_sentence_split(text)
+        n_sent = max(1, len(sentences))
+
+        # 1) 기본 통계
+        avg_len = n_tokens / n_sent if n_sent else 0.0  # 문장당 토큰 수
+        uniq = len(set(tokens)) if tokens else 0
+        ttr = (uniq / n_tokens) if n_tokens else 0.0    # type-token ratio
+
+        # 2) 반복 bigram 비율
+        from collections import Counter
+        bigrams = []
+        for i in range(len(tokens) - 1):
+            bigrams.append((tokens[i], tokens[i + 1]))
+        rep_rate = 0.0
+        if bigrams:
+            c = Counter(bigrams)
+            repeated = sum(v for v in c.values() if v >= 2)
+            rep_rate = repeated / len(bigrams)
+
+        # 3) 문체 패턴 휴리스틱
+        polite_ends = ("습니다.", "합니다.", "됩니다.", "있습니다.", "것입니다.")
+        ai_connect = [
+            "또한", "한편", "따라서", "이러한", "그렇기에", "종합하면",
+            "무엇보다", "게다가", "하지만", "그러나", "먼저", "둘째", "마지막으로",
+        ]
+
+        polite_count = 0
+        connect_sent_count = 0
+
+        for s in sentences:
+            s_stripped = s.strip()
+            if s_stripped.endswith(polite_ends):
+                polite_count += 1
+            if any(c in s_stripped for c in ai_connect):
+                connect_sent_count += 1
+
+        polite_ratio = polite_count / n_sent if n_sent else 0.0
+        connect_ratio = connect_sent_count / n_sent if n_sent else 0.0
+
+        pattern_score = 0.0
+        # 공손체 어미 반복 비율
+        if polite_ratio >= 0.7:
+            pattern_score += 0.35
+        elif polite_ratio >= 0.4:
+            pattern_score += 0.20
+
+        # 접속사 문장 비율
+        if connect_ratio >= 0.5:
+            pattern_score += 0.25
+        elif connect_ratio >= 0.3:
+            pattern_score += 0.15
+
+        # 전체 길이가 어느 정도 이상이면 추가 가중치
+        if n_tokens >= 260:
+            pattern_score += 0.20
+        elif n_tokens >= 160:
+            pattern_score += 0.10
+
+        pattern_score = min(1.0, pattern_score)
+
+        # 4) 스코어링 (0~100)
+        #   - avg_len ↑, ttr ↓, rep_rate ↑, pattern_score ↑ => AI 점수 ↑
+        s_len = min(1.0, avg_len / 30.0)          # 30 토큰 이상이면 최댓값 (더 공격적)
+        s_ttr = 1.0 - min(1.0, ttr / 0.70)        # TTR 0.7 이하부터 점수↑
+        s_rep = min(1.0, rep_rate / 0.18)         # 반복 bigram 18% 이상이면 최댓값
+
+        # 길이/TTR/반복 + 문체 패턴을 섞어서 계산
+        raw = (
+            s_len * 0.30 +
+            s_ttr * 0.30 +
+            s_rep * 0.15 +
+            pattern_score * 0.25
+        )
+
+        # 아주 짧은 글(문장 1~2개 수준)은 예비필터 의미가 약하므로 점수 축소
+        if n_tokens < 60:
+            raw *= 0.4
+        elif n_tokens < 120:
+            raw *= 0.7
+
+        raw = max(0.0, min(1.0, raw))
+        score = int(round(raw * 100))
+
+        # 5) 라벨 – 예비필터용으로 AI 쪽 임계값을 낮게 둠
+        if score >= 55:
+            label = "ai_suspected"
+            level = "high"
+            msg = "AI 작성 패턴에 매우 가깝습니다. (로컬 휴리스틱 1차 필터, 참고용입니다.)"
+        elif score >= 35:
+            label = "borderline"
+            level = "medium"
+            msg = "AI 영향이 있거나, AI/사람 글이 섞였을 가능성이 있습니다."
+        else:
+            label = "human_like"
+            level = "low"
+            msg = "사람이 쓴 글 패턴에 더 가깝게 보입니다. (그래도 확정 판정은 아닙니다.)"
+
+        signals = {
+            "tokens": n_tokens,
+            "sentences": len(sentences),
+            "avg_sentence_tokens": avg_len,
+            "type_token_ratio": ttr,
+            "repeat_bigram_ratio": rep_rate,
+            "polite_ratio": polite_ratio,
+            "connect_ratio": connect_ratio,
+        }
+
+        # 사용량 로깅(있으면 사용, 에러 나도 무시)
+        try:
+            username = _username_from_req()
+            log_usage(username, "ai_local_detect_v2", len(text))
+        except Exception:
+            pass
+
+        return jsonify({
+            "ok": True,
+            "score": score,
+            "label": label,
+            "level": level,
+            "message": msg,
+            "signals": signals,
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.post("/guide_keyword_count")
 @require_user
