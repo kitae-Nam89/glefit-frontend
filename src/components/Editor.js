@@ -4964,23 +4964,22 @@ return (
             }
             style={isGuest ? lockedBtnStyle : undefined}
           >
-            {aiLocalLoading ? "AI 탐지 중…" : "AI 탐지(참고용)"}
+            {aiLocalLoading ? "AI 탐지 중…" : "AI 탐지(참고)"}
           </button>
 
-          {/* ✅ 전체 검사(배치) */}
+          {/* ✅ 전체 검사(배치) — 관리자 전용 */}
           <button
-            onClick={!isGuest ? handleBatchCheck : undefined}
-            disabled={isGuest}
+            onClick={isAdmin ? handleBatchCheck : undefined}
+            disabled={!isAdmin}
             title={
-              isGuest
-                ? "체험(게스트)에서는 사용이 제한됩니다."
-                : "현재 업로드된 전체 파일 한 번에 검사"
+              isAdmin
+                ? "현재 업로드된 전체 파일을 한 번에 검사합니다."
+                : "관리자 전용 기능입니다"
             }
-            style={isGuest ? lockedBtnStyle : undefined}
+            style={!isAdmin ? lockedBtnStyle : undefined}
           >
-            전체(배치)
-          </button>
-
+            {!isAdmin ? "🔒 전체 검사" : "전체 검사"}
+         </button>
 
           {/* ✅ 저장류 — 로그인 사용자만 허용 (게스트 잠금) */}
 <button
