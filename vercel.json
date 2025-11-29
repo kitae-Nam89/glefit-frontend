@@ -1,0 +1,15 @@
+{
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "glefit.kr"
+        }
+      ],
+      "destination": "https://whimsical-enquiry-fc4.notion.site/8-2ba2777cc76980de8c04c8766a0546d8",
+      "permanent": true
+    }
+  ]
+}
