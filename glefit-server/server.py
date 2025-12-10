@@ -658,6 +658,498 @@ def add_context(text, start, length, window=8):
 def gpt_call(model, messages):
     return client.chat.completions.create(model=model, messages=messages)
 
+# === [NEW] 문서 스타일/유형 분석 (정보형/후기형/프로모션) ===
+# 1) 정보형/후기형/프로모션 키워드 힌트
+_INFO_HINTS = [
+    "기본 정보", "특징", "장점", "단점", "구성", "가격", "스펙",
+    "이용 방법", "신청 방법", "자주 묻는 질문", "FAQ",
+]
+
+_REVIEW_HINTS = [
+    "직접 사용해 보니", "써보니", "경험담", "후기", "느낀 점",
+    "솔직 후기", "개인적인 생각", "사용기", "체험기",
+]
+
+_CTA_HINTS = [
+    "지금 바로", "지금 신청", "지금 문의", "상담이 필요하시면",
+    "아래 번호로", "연락 주시면", "문의 주시면", "도와드리겠습니다",
+    "진행해드리겠습니다", "안내해드리겠습니다",
+]
+
+_FIRST_PERSON = ["저는", "제가", "제 입장에서는", "제 생각에는"]
+_OPINION_ADJ = ["좋았던", "만족스러운", "아쉬운", "괜찮은", "인상적인"]
+
+# 시간/통계 표현 (조금 더 정보형 느낌)
+_TIME_EXPR_RX = re.compile(r"(년|월|일|주|시간|분)\s*동안|최근\s*\d+\s*(년|개월)")
+_PHONE_RX = re.compile(r"\d{2,4}-\d{3,4}-\d{4}")
+# 문서 스타일 분석에서 사용하는 전화번호 패턴 alias
+_DOC_PHONE_RX = _PHONE_RX
+
+# 인기/유명/가성비 표현
+_POPULAR_EXPR_RX = re.compile(
+    r"(인기(?:가|를)?\s*(많이|높게|좋게)?|유명하|많이\s*(찾는|선택하는)|가성비\s*가?\s*좋)"
+)
+
+# 불특정 다수/집단 표현
+_GENERIC_PEOPLE_RX = re.compile(
+    r"(많은|대부분|여러|수많은)\s*(분들|사람들|고객|이용자|학생|수험생)"
+)
+
+# '가능합니다/가능해요' 안내형 표현
+_POSSIBLE_EXPR_RX = re.compile(r"(가능합니다|가능해요)")
+
+# 강한 행동 유도형 표현(광고톤)
+_STRONG_CTA_RX = re.compile(
+    r"(놓치지\s*마세요|서두르세요|서둘러\s*주세요|지금\s*바로\s*신청|지금\s*바로\s*예약)"
+)
+
+# 문장 마무리/추상 표현/접속사 패턴용
+_MECH_END_RX = re.compile(
+    r"(도와드리겠습니다|안내해드리겠습니다|진행해드리겠습니다|"
+    r"확인해드리겠습니다|적용해드리겠습니다|입니다|합니다|됩니다)$"
+)
+
+_VAGUE_TREND_RX = re.compile(
+    r"(많이|점점|계속|꾸준히)\s*(늘어나|증가하|줄어들|감소하|높아지|낮아지)[^0-9%]{0,15}(있습니다|있어요|있습니다\.)?"
+)
+
+_GENERIC_MANY_PEOPLE_RX = re.compile(
+    r"(많은|다양한)\s*(분들|사람들|이용자|고객).{0,15}(이용하고 있습니다|찾고 있습니다|사용하고 있습니다)"
+)
+
+_CONNECTIVES = [
+    "또한", "그리고", "그러므로", "그래서", "따라서",
+    "하지만", "그러나", "한편", "게다가", "이와 함께",
+    "뿐만 아니라", "무엇보다", "먼저", "다음으로", "종합하면",
+]
+
+_HELP_PHRASES = [
+    "도와드리겠습니다", "안내해드리겠습니다", "안내해 드리겠습니다",
+    "진행해드리겠습니다", "진행해 드리겠습니다",
+    "확인해드리겠습니다", "확인해 드리겠습니다",
+    "적용해드리겠습니다", "적용해 드리겠습니다",
+]
+
+
+def _count_hits(text: str, hints: list[str]) -> int:
+    c = 0
+    for h in hints:
+        if h in text:
+            c += 1
+    return c
+
+
+def analyze_doc_style(text: str):
+    """
+    문서 전체의 문장 길이/어투/접속사/안내 멘트/추세 표현 등을 기반으로
+    '문체/서술형' 관련 조언 문구만 만들어 주는 헬퍼.
+    점수는 안 쓰고, 조언(advice)만 반환합니다.
+    """
+    # 기본 토큰/문장 수
+    norm = kr_norm(text)
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", norm)
+    n_tok = max(1, len(tokens))
+
+    sents = basic_kr_sentence_split(text)
+    sent_texts = [s.strip() for s in sents if s.strip()]
+    n_sent = max(1, len(sent_texts))
+
+    # 문장 길이(문자 수) 통계
+    sent_lens = [len(s) for s in sent_texts]
+    avg_len = sum(sent_lens) / len(sent_lens) if sent_lens else 0
+    long_sent_count = sum(1 for L in sent_lens if L >= 50)
+
+    # 기존 키워드 카운트(정보/후기/CTA) – 타입 분류는 안 쓰지만
+    # 조언 문구에 참고용으로만 사용
+    info_hits = _count_hits(text, _INFO_HINTS)
+    review_hits = _count_hits(text, _REVIEW_HINTS)
+    cta_hits = _count_hits(text, _CTA_HINTS)
+
+    fp_hits = _count_hits(text, _FIRST_PERSON)
+    opinion_hits = _count_hits(text, _OPINION_ADJ)
+    time_expr_hits = len(_TIME_EXPR_RX.findall(text))
+    phone_hits = len(_PHONE_RX.findall(text))
+
+    # 어투: 공손한 설명체 / 느낌표 비율
+    polite_ends = ("습니다", "합니다", "됩니다", "되어요", "해요")
+    polite_sent = 0
+    exclam_sent = 0
+
+    # 기계적인 문장 끝 패턴(입니다/합니다/드리겠습니다...)
+    mech_ends = [
+        "입니다", "합니다", "됩니다", "드리겠습니다", "해 드리겠습니다",
+        "해드리겠습니다", "될 수 있습니다", "할 수 있습니다",
+    ]
+    mech_counts = {m: 0 for m in mech_ends}
+
+    # 접속사/도입부
+    connective_hits = 0
+    connective_start_hits = 0
+
+    for s in sent_texts:
+        st = s.strip()
+        # 문장 끝의 마침표/쉼표/느낌표 등은 제거하고 어미만 비교
+        core = st.rstrip(" .,!?…~")
+
+        if any(core.endswith(e) for e in polite_ends):
+            polite_sent += 1
+        if "!" in st:
+            exclam_sent += 1
+
+        for m in mech_ends:
+            if core.endswith(m):
+                mech_counts[m] += 1
+                break
+
+        # 접속사: 문장 앞쪽에 오는 경우/전체 등장 횟수 모두 체크
+        for w in _CONNECTIVES:
+            if w in st:
+                connective_hits += st.count(w)
+            if st.startswith(w):
+                connective_start_hits += 1
+                break
+
+    polite_ratio = polite_sent / n_sent if n_sent else 0
+    exclam_ratio = exclam_sent / n_sent if n_sent else 0
+
+    # 근거 없는 '늘어나고 있습니다 / 많아지고 있습니다' 식 표현
+    vague_trend_hits = len(_VAGUE_TREND_RX.findall(text))
+    generic_many_hits = len(_GENERIC_MANY_RX.findall(text))
+    trend_hits = vague_trend_hits + generic_many_hits
+    has_number = bool(re.search(r"\d", norm)) or ("퍼센트" in norm) or ("배" in norm)
+
+    # '도와드리겠습니다/안내해 드리겠습니다' 연속 안내 멘트
+    help_hits = _count_hits(text, _HELP_PHRASES)
+
+    # 인기/유명/가성비, 불특정 다수, '가능합니다', 강한 CTA 패턴 카운트
+    popular_hits = len(_POPULAR_EXPR_RX.findall(text))
+    generic_people_hits = len(_GENERIC_PEOPLE_RX.findall(text))
+    possible_hits = len(_POSSIBLE_EXPR_RX.findall(text))
+    strong_cta_hits = len(_STRONG_CTA_RX.findall(text))
+
+    # 지배적인 기계적 어미 비율
+    dominant_mech = max(mech_counts.values()) if mech_counts else 0
+    mech_ratio = dominant_mech / n_sent if n_sent else 0
+
+    advice: list[str] = []
+
+    # 1) 문장이 너무 길거나 긴 문장이 연속되는 경우
+    if avg_len >= 45 or long_sent_count >= max(2, n_sent // 3):
+        advice.append(
+            "문장의 평균 길이가 길게 나옵니다. 한 문장 안에 여러 정보를 넣지 말고 "
+            "2~3개의 짧은 문장으로 나누어 리듬을 만들어 주세요."
+        )
+
+    # 2) 공손체 어미가 지나치게 많은 경우
+    if polite_ratio >= 0.7 and n_sent >= 5:
+        advice.append(
+            "습니다/합니다/돼요 같은 공손체 어미 비율이 높습니다. "
+            "설명형 문장 사이에 '-다', '-인 편입니다', '-할 수 있습니다'처럼 "
+            "어미 변화를 섞어 주면 기계적인 패턴을 줄이는 데 도움이 됩니다."
+        )
+
+    # 3) 느낌표 과다 사용
+    if exclam_ratio >= 0.25:
+        advice.append(
+            "느낌표가 많이 사용되었습니다. 중요한 한두 문장에만 느낌표를 남기고 "
+            "나머지는 마침표로 정리하면 검색엔진이 과한 광고 톤으로 보지 않습니다."
+        )
+
+    # 4) CTA/문의 표현이 많을 때
+    if cta_hits >= 3 or phone_hits >= 1:
+        advice.append(
+            "상담/문의/예약/전화번호 같은 표현이 여러 번 등장합니다. "
+            "본문에서는 정보·경험 중심으로 쓰고, 마지막 단락에만 간단히 "
+            "문의·연락처를 정리하는 편이 안전합니다."
+        )
+
+    # 5) 정보 키워드와 후기 키워드가 모두 많은 경우
+    if info_hits >= 5 and review_hits >= 5:
+        advice.append(
+            "설명형 문장과 후기/경험 문장이 섞여 있습니다. "
+            "정보 안내 부분과 실제 사용 후기 부분을 소제목으로 나누어 정리하면 "
+            "가독성이 좋아지고 검색엔진도 의도를 더 명확히 파악합니다."
+        )
+
+    # 6) '입니다/합니다/드리겠습니다' 한 가지 어미로만 끝나는 패턴
+    if mech_ratio >= 0.6 and n_sent >= 4:
+        advice.append(
+            "여러 문장이 같은 어미(예: '~입니다', '~합니다', '~드리겠습니다')로만 끝납니다. "
+            "단락별로 어미를 조금씩 바꾸고, 문장 길이도 섞어 주면 사람이 직접 쓴 느낌이 더 강해집니다."
+        )
+
+    # 7) '도와드리겠습니다/안내해 드리겠습니다' 안내 멘트가 연속되는 경우
+    if help_hits >= 3:
+        advice.append(
+            "도와드리겠습니다/안내해 드리겠습니다 같은 안내 문장이 연속으로 등장합니다. "
+            "중간에는 실제 정보·예시·경험을 넣고, 마지막 단락에만 안내 문장을 모아서 정리하는 편이 좋습니다."
+        )
+
+    # 8) 또한/그리고/그러나/따라서 등 접속사 반복
+    if connective_start_hits >= 3 or connective_hits >= max(5, n_sent):
+        advice.append(
+            "또한/그리고/그러나/따라서 같은 접속사가 자주 반복됩니다. "
+            "모든 문장을 접속사로 시작하기보다는, 핵심 키워드를 문장 앞에 두고 "
+            "문단 사이 연결이 필요할 때만 접속사를 사용하는 편이 자연스럽습니다."
+        )
+
+    # 9) '많이 늘어나고 있습니다' 식 추세 표현인데 숫자/기준이 없는 경우
+    if trend_hits >= 1 and not has_number:
+        advice.append(
+            "‘많이 늘어나고 있습니다’, ‘수요가 높아지고 있습니다’ 같은 추세 표현이 나오지만 "
+            "구체적인 숫자나 기간, 기준이 없습니다. 최근 1~2년 기준의 통계·검색량·문의 건수 등 "
+            "간단한 근거를 함께 적어 주면 설득력과 신뢰도가 올라갑니다."
+        )
+
+    # 10) 인기/유명/가성비 표현인데 기준이 없는 경우
+    if popular_hits >= 1 and not has_number:
+        advice.append(
+            "‘인기’, ‘유명’, ‘많이 찾는’, ‘가성비가 좋다’ 같은 표현이 나오지만 "
+            "기간·숫자·비교 대상 등의 기준이 없습니다. 최근 3~6개월 기준의 이용자 수나 "
+            "비교 대상(동급 제품, 주변 상권 등)을 함께 적어 주면 신뢰도가 높아집니다."
+        )
+
+    # 11) '많은 분들/대부분 사람들' 같은 불특정 다수 표현
+    if generic_people_hits >= 1:
+        advice.append(
+            "‘많은 분들’, ‘대부분 사람들’, ‘여러 고객’처럼 대상을 넓게 표현한 문장이 있습니다. "
+            "‘최근 구매자’, ‘기존 이용 고객’, ‘문의 주신 분들’처럼 대상을 조금 더 구체적으로 "
+            "나누어 적어 주면 설득력이 올라갑니다."
+        )
+
+    # 12) '지금 바로 ~하세요', '놓치지 마세요' 등 강한 행동 유도 표현
+    if strong_cta_hits >= 2:
+        advice.append(
+            "‘지금 바로 신청하세요’, ‘놓치지 마세요’, ‘서두르세요’ 같은 강한 행동 유도 문장이 "
+            "여러 번 등장합니다. 정보형·후기형 글에서는 결론 부분에 한두 번만 사용하고, "
+            "본문은 정보·경험 중심 어조를 유지하는 편이 자연스럽습니다."
+        )
+
+    # 13) '~ 가능합니다' 안내형 표현이 반복되는 경우
+    if possible_hits >= 3:
+        advice.append(
+            "‘예약 가능합니다’, ‘상담 가능합니다’처럼 '~ 가능합니다' 안내 문장이 여러 번 반복됩니다. "
+            "안내 정보는 마지막 단락에 한 번에 모아서 정리하고, 본문에서는 실제 내용과 사례 위주로 "
+            "써 주면 공지문 느낌을 줄이고 읽기 편한 글이 됩니다."
+        )
+
+    return {
+        "ok": True,
+        "type": "general",
+        "mixed": None,
+        # 기존 필드 호환용 – 점수는 의미 없으니 0으로 고정
+        "scores": {"info": 0.0, "review": 0.0, "promo": 0.0},
+        "features": {
+            "tokens": n_tok,
+            "sentences": n_sent,
+            "avg_sentence_len": round(avg_len, 1),
+            "long_sentence_count": long_sent_count,
+            "info_hits": info_hits,
+            "review_hits": review_hits,
+            "cta_hits": cta_hits,
+            "first_person_hits": fp_hits,
+            "opinion_hits": opinion_hits,
+            "time_expr_hits": time_expr_hits,
+            "phone_hits": phone_hits,
+            "polite_ratio": round(polite_ratio, 3),
+            "exclam_ratio": round(exclam_ratio, 3),
+            "repeated_ending_types": repeated_ending_types,
+            "connective_sentence_ratio": round(connective_sentence_ratio, 3),
+            "vague_trend_sentences": vague_trend_sent,
+            "popular_hits": popular_hits,
+            "generic_people_hits": generic_people_hits,
+            "possible_hits": possible_hits,
+            "strong_cta_hits": strong_cta_hits,
+        },
+        "advice": advice,
+    }
+
+    # 기본 토큰/문장 수
+    norm = kr_norm(text)
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", norm)
+    n_tok = max(1, len(tokens))
+
+    sents = basic_kr_sentence_split(text)
+    sent_texts = [s.strip() for s in sents if s.strip()]
+    n_sent = max(1, len(sent_texts))
+
+    # 문장 길이(문자 수) 통계
+    sent_lens = [len(s) for s in sent_texts]
+    avg_len = sum(sent_lens) / len(sent_lens) if sent_lens else 0
+    long_sent_count = sum(1 for L in sent_lens if L >= 50)
+
+    # 기존 키워드 카운트(정보/후기/CTA)
+    info_hits = _count_hits(text, _INFO_HINTS)
+    review_hits = _count_hits(text, _REVIEW_HINTS)
+    cta_hits = _count_hits(text, _CTA_HINTS)
+
+    fp_hits = _count_hits(text, _FIRST_PERSON)
+    opinion_hits = _count_hits(text, _OPINION_ADJ)
+    time_expr_hits = len(_TIME_EXPR_RX.findall(text))
+    phone_hits = len(_PHONE_RX.findall(text))
+
+    # 어투: 공손한 설명체 / 느낌표 비율
+    polite_ends = ("습니다", "합니다", "됩니다", "되어요", "해요")
+    polite_sent = 0
+    exclam_sent = 0
+    for s in sent_texts:
+        st = s.strip()
+        core = st.rstrip(" .,!?…~")
+        if any(core.endswith(e) for e in polite_ends):
+            polite_sent += 1
+        if "!" in st:
+            exclam_sent += 1
+
+    polite_ratio = polite_sent / n_sent
+    exclam_ratio = exclam_sent / n_sent
+
+    # ===== ① 같은 어미/같은 구조 반복 (예: 입니다/해드리겠습니다) =====
+    ending_counts: dict[str, int] = {}
+    im_ends = 0      # '입니다'로 끝나는 문장 수
+    hae_ends = 0     # '~해드리겠습니다' 문장 수
+
+    for s in sent_texts:
+        core = s.strip().rstrip(" .,!?…~")
+        if not core:
+            continue
+        if core.endswith("입니다"):
+            im_ends += 1
+        if core.endswith("해드리겠습니다") or core.endswith("해 드리겠습니다"):
+            hae_ends += 1
+
+        # 뒤에서 6글자 정도를 어미 패턴으로 본다
+        ending = core[-6:] if len(core) >= 6 else core
+        if len(ending) >= 3:
+            ending_counts[ending] = ending_counts.get(ending, 0) + 1
+
+    repetitive_endings = [e for e, c in ending_counts.items() if c >= 3]
+    repeated_ending_types = len(repetitive_endings)
+
+    # ===== ② 접속사로 시작하는 문장 비율 (또한/그리고/그러므로 등) =====
+    connective_start = 0
+    connective_total = 0
+    for s in sent_texts:
+        st = s.lstrip()
+        for cword in _CONNECTIVES:
+            if cword in st:
+                connective_total += st.count(cword)
+            if st.startswith(cword):
+                connective_start += 1
+                break
+    connective_sentence_ratio = connective_start / n_sent
+
+    # ===== ③ '많이 늘어나고 있습니다' 류: 통계 없는 추세 표현 =====
+    vague_trend_sent = 0
+    for s in sent_texts:
+        if _VAGUE_TREND_RX.search(s):
+            # 같은 문장 안에 구체 수치가 없으면 문제로 본다
+            if not re.search(
+                r"\d|퍼센트|%|명|개|건|회|원|시간|분|일|주|개월|달|년", s
+            ):
+                vague_trend_sent += 1
+
+    # ── 여기서부터 '도와주는 조언'만 만든다 ─────────────────────
+    advice: list[str] = []
+
+    # (기존) 1) 문장이 너무 길거나 긴 문장이 연속되는 경우
+    if avg_len >= 45 or long_sent_count >= max(2, n_sent // 3):
+        advice.append(
+            "문장의 평균 길이가 길게 나옵니다. 한 문장 안에 여러 정보를 넣지 말고 "
+            "2~3개의 짧은 문장으로 나누어 리듬을 만들어 주세요."
+        )
+
+    # (기존) 2) 공손체 어미가 지나치게 많은 경우
+    if polite_ratio >= 0.7 and n_sent >= 5:
+        advice.append(
+            "습니다/합니다/돼요 같은 공손체 어미 비율이 높습니다. "
+            "설명형 문장 사이에 '-다', '-인 편입니다', '-할 수 있습니다'처럼 "
+            "어미 변화를 섞어 주면 기계적인 패턴을 줄이는 데 도움이 됩니다."
+        )
+
+    # (기존) 3) 느낌표 과다 사용
+    if exclam_ratio >= 0.25:
+        advice.append(
+            "느낌표가 많이 사용되었습니다. 중요한 한두 문장에만 느낌표를 남기고 "
+            "나머지는 마침표로 정리하면 검색엔진이 과한 광고 톤으로 보지 않습니다."
+        )
+
+    # (기존) 4) CTA/문의 표현이 많을 때
+    if cta_hits >= 3 or phone_hits >= 1:
+        advice.append(
+            "상담/문의/예약/전화번호 같은 표현이 여러 번 등장합니다. "
+            "본문에서는 정보·경험 중심으로 쓰고, 마지막 단락에만 간단히 "
+            "문의·연락처를 정리하는 편이 안전합니다."
+        )
+
+    # (기존) 5) 정보 키워드와 후기 키워드가 모두 많은 경우
+    if info_hits >= 5 and review_hits >= 5:
+        advice.append(
+            "설명형 문장과 후기/경험 문장이 섞여 있습니다. "
+            "정보 안내 부분과 실제 사용 후기 부분을 소제목으로 나누어 정리하면 "
+            "가독성이 좋아지고 검색엔진도 의도를 더 명확히 파악합니다."
+        )
+
+    # (확장 1번) 구체적 수치 없이 '많이 늘어나고 있습니다'류 표현
+    if vague_trend_sent >= 1:
+        advice.append(
+            "‘많이 늘어나고 있습니다’처럼 증가/감소를 말하지만 숫자나 기간이 없는 "
+            "표현이 보입니다. 몇 %인지, 어느 기간 동안 얼마나 늘었는지 등 "
+            "구체적인 수치나 사례를 한 줄만 더 붙여 주세요."
+        )
+
+    # (확장 4번) 같은 어미 반복 – 특히 '입니다.'와 '해드리겠습니다.'
+    if hae_ends >= 3:
+        advice.append(
+            "여러 문장이 모두 '~해드리겠습니다.'로 끝납니다. "
+            "일부 문장은 '도와드립니다', '지원합니다', '진행합니다'처럼 "
+            "어미와 표현을 조금씩 바꿔 주면 더 사람 손을 탄 느낌이 납니다."
+        )
+    elif im_ends >= 3 and im_ends >= n_sent * 0.6:
+        advice.append(
+            "문장의 상당수가 '입니다.'로 끝납니다. "
+            "중간중간 '-인 편입니다', '-할 수 있습니다', '-로 이어집니다'처럼 "
+            "어미를 다양하게 섞어 주면 기계적인 리듬을 줄일 수 있습니다."
+        )
+    elif repeated_ending_types >= 1 and n_sent >= 4:
+        advice.append(
+            "여러 문장이 거의 같은 어미로만 끝나는 패턴이 보입니다. "
+            "문장 끝 어미를 2~3가지 정도로 나누어 쓰면 자연스러운 서술형에 가깝습니다."
+        )
+
+    # (새 규칙) 접속사로 시작하는 문장 비율 – 또한/그리고/그러므로/따라서…
+    if connective_start >= 3 and connective_sentence_ratio >= 0.35:
+        advice.append(
+            "여러 문장이 '또한/그리고/그러므로/따라서' 같은 접속사로 시작합니다. "
+            "접속사는 문단 전환에만 가볍게 쓰고, 나머지 문장은 키워드나 주어로 "
+            "바로 시작하면 AI 패턴 느낌을 줄일 수 있습니다."
+        )
+
+    return {
+        "ok": True,
+        "type": "general",
+        "mixed": None,
+        "scores": {"info": 0.0, "review": 0.0, "promo": 0.0},
+        "features": {
+            "tokens": n_tok,
+            "sentences": n_sent,
+            "avg_sentence_len": round(avg_len, 1),
+            "long_sentence_count": long_sent_count,
+            "info_hits": info_hits,
+            "review_hits": review_hits,
+            "cta_hits": cta_hits,
+            "first_person_hits": fp_hits,
+            "opinion_hits": opinion_hits,
+            "time_expr_hits": time_expr_hits,
+            "phone_hits": phone_hits,
+            "polite_ratio": round(polite_ratio, 3),
+            "exclam_ratio": round(exclam_ratio, 3),
+            "repeated_ending_types": repeated_ending_types,
+            "connective_sentence_ratio": round(connective_sentence_ratio, 3),
+            "vague_trend_sentences": vague_trend_sent,
+        },
+        "advice": advice,
+    }
+
 # --- 공백/문자 정규화 & 공백무시 키워드용 ---
 def kr_norm(s: str) -> str:
     s = unicodedata.normalize("NFKC", s or "")
@@ -2423,9 +2915,14 @@ def ai_local_detect():
             elif 40 <= L <= 110:
                 len_score = 0.2
 
-            # 2-2) 접속사/AI 전형 패턴 반복
-            ai_connect = ["또한", "한편", "따라서", "이러한", "그렇기에", "종합하면"]
+            # 2-2) 접속사/AI 전형 패턴 반복 (확장)
+            ai_connect = [
+                "또한", "그리고", "그러므로", "그래서", "따라서",
+                "하지만", "그러나", "한편", "게다가", "이와 함께",
+                "뿐만 아니라", "종합하면", "무엇보다", "먼저", "다음으로",
+            ]
             connect_count = sum(s.count(c) for c in ai_connect)
+            # 접속사가 1개면 0.1, 2개면 0.2, 3개 이상이면 0.3으로 캡
             connect_score = min(0.3, connect_count * 0.1)
 
             # 2-3) "합니다."/"습니다." 반복 (AI 흔함)
@@ -2472,6 +2969,255 @@ def ai_local_detect():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# === [NEW] 문서 스타일/서술형 프로파일 (정보형/후기/프로모션) ===
+
+_DOC_INFO_HINTS = [
+    "정의", "특징", "종류", "장점", "단점", "주의사항",
+    "절차", "방법", "순서", "준비물",
+    "신청", "접수", "발급", "등록",
+    "비용", "가격", "요금", "기간", "대상", "조건",
+    "필요합니다", "참고해 주세요", "참고하세요", "알아두세요",
+]
+
+_DOC_REVIEW_HINTS = [
+    "후기", "경험담", "리뷰",
+    "직접", "사용해보", "써보", "써봤",
+    "다녀왔", "방문했", "받아봤", "받았어요",
+    "느꼈", "느껴졌", "생각했", "생각이 들었",
+]
+
+_DOC_CTA_HINTS = [
+    "상담", "문의", "예약", "클릭", "연락",
+    "전화", "대표번호", "카카오톡", "카톡", "채널 추가",
+    "지금", "바로", "지금 바로", "혜택", "이벤트",
+    "할인", "프로모션", "특가", "한정", "마감",
+]
+
+_DOC_FIRST_PERSON = [
+    "저", "제가", "저는", "제", "저희", "저희는",
+    "우리", "우리는", "우리가",
+]
+
+_DOC_OPINION_ADJ = [
+    "좋았", "괜찮았", "만족", "아쉬웠", "불편했",
+    "편했", "불만족", "추천", "추천드", "도움이 됐",
+]
+
+_TIME_EXPR_RX = re.compile(
+    r"(어제|오늘|이번에|처음에|처음에는|그 뒤에|그후에|그 후에|이후에|그때|그 당시)"
+)
+
+_PHONE_RX = re.compile(r"\d{2,4}-\d{3,4}-\d{4}")
+
+# --- [NEW] 문체/AI 흔적 관련 패턴 -------------------
+# 근거 없이 '많이 늘어나고 있습니다' 식으로 쓰이는 추세 표현
+_VAGUE_TREND_RX = re.compile(
+    r"(늘어나고 있습|증가하고 있습|많아지고 있습|높아지고 있습|"
+    r"수요가 많아지고 있습|관심이 높아지고 있습)"
+)
+
+# '사람들이 많이 ~하고 있습니다' 같은 뭉뚱그린 표현
+_GENERIC_MANY_RX = re.compile(
+    r"(사람들이 많이|수요도 많이|많은 분들이|문의가 많아지고 있습|"
+    r"요청이 많아지고 있습|관심도 높아지고 있습)"
+)
+
+# 또한/그리고/그러나/따라서/그러므로/그래서/한편/게다가/무엇보다...
+_CONNECTIVE_WORDS = [
+    "또한", "그리고", "그러나", "하지만", "따라서", "그러므로", "그래서",
+    "한편", "게다가", "무엇보다", "먼저", "다음으로", "마지막으로",
+    "이와 같이", "이와 함께", "뿐만 아니라",
+]
+
+# 도와드리겠습니다/안내해 드리겠습니다/진행해 드리겠습니다... 같은 안내 멘트
+_HELP_PHRASES = [
+    "도와드리겠습니다", "도와 드리겠습니다",
+    "안내해 드리겠습니다", "안내해드리겠습니다", "안내 드리겠습니다",
+    "진행해 드리겠습니다", "진행해드리겠습니다",
+    "확인해 드리겠습니다", "확인해드리겠습니다",
+    "적용해 드리겠습니다", "적용해드리겠습니다",
+    "안내 도와드리겠습니다", "도움 드리겠습니다",
+]
+
+
+def _count_hits(text: str, patterns: list[str]) -> int:
+    c = 0
+    t = text or ""
+    for p in patterns:
+        if not p:
+            continue
+        c += len(re.findall(re.escape(p), t))
+    return c
+
+
+def analyze_doc_style(text: str) -> dict:
+    """
+    글핏 전용 문서 스타일 분석 (간단 버전)
+
+    - 정보/후기/프로모션 분류는 하지 않고,
+      문장 길이/공손체/느낌표/문의 표현 등을 기준으로
+      검색엔진이 싫어할 수 있는 패턴만 골라 issues 로 돌려준다.
+    - 프론트 호환을 위해 doc_type/type/scores/features 구조는 그대로 유지한다.
+    """
+    text = (text or "").strip()
+    if not text:
+        return {
+            "ok": True,
+            "doc_type": "general",
+            "type": "general",
+            "scores": {"info": 0.0, "review": 0.0, "promo": 0.0},
+            "issues": [],
+            "features": {},
+        }
+
+    # 기본 전처리
+    norm = kr_norm(text)
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", norm)
+    n_tok = max(1, len(tokens))
+
+    sents = basic_kr_sentence_split(text)
+    sents = [s.strip() for s in sents if s.strip()]
+    n_sent = max(1, len(sents))
+
+    # 문장 길이 통계
+    sent_lens = [len(s) for s in sents]
+    avg_len = sum(sent_lens) / len(sent_lens) if sent_lens else 0.0
+    long_sent_count = sum(1 for L in sent_lens if L >= 50)
+
+    # 패턴 카운트 (기존 힌트 목록 재사용)
+    info_hits = _count_hits(text, _INFO_HINTS)
+    review_hits = _count_hits(text, _REVIEW_HINTS)
+    cta_hits = _count_hits(text, _CTA_HINTS)
+
+    fp_hits = _count_hits(text, _FIRST_PERSON)
+    opinion_hits = _count_hits(text, _OPINION_ADJ)
+    time_expr_hits = len(_TIME_EXPR_RX.findall(text))
+    phone_hits = len(_DOC_PHONE_RX.findall(text))
+
+    # 접속사/추세 표현 관련 지표
+    connective_hits = 0
+    connective_start_hits = 0
+    for s in sents:
+        st = s.strip()
+        for w in _CONNECTIVE_WORDS:  # 이미 아래쪽에 정의돼 있음
+            if w in st:
+                connective_hits += st.count(w)
+            if st.startswith(w):
+                connective_start_hits += 1
+                break
+
+    vague_trend_hits = len(_VAGUE_TREND_RX.findall(text))
+    generic_many_hits = len(_GENERIC_MANY_RX.findall(text))
+    trend_hits = vague_trend_hits + generic_many_hits
+    has_number = bool(re.search(r"\d", text)) or ("퍼센트" in text) or ("배" in text)
+
+    # 공손체/느낌표 비율
+    polite_ends = ("습니다", "합니다", "됩니다", "되어요", "해요")
+    polite_sent = 0
+    exclam_sent = 0
+    for s in sents:
+        st = s.strip()
+        if any(st.endswith(e) for e in polite_ends):
+            polite_sent += 1
+        if "!" in st:
+            exclam_sent += 1
+    polite_ratio = polite_sent / n_sent
+    exclam_ratio = exclam_sent / n_sent
+
+    # ==== 스타일 이슈 생성 (도와주는 용도) ====
+    issues = []
+
+    # 1) 문장이 너무 길 때
+    if avg_len >= 45 or long_sent_count >= max(2, n_sent // 3):
+        issues.append({
+            "code": "LONG_SENTENCE",
+            "label": "문장이 너무 길게 이어짐",
+            "reason": "문장 평균 길이가 길거나 긴 문장이 연속되어 있어, 2~3개의 짧은 문장으로 나누면 더 자연스럽습니다.",
+        })
+
+    # 2) 공손체 어미 비율이 높을 때
+    if polite_ratio >= 0.7 and n_sent >= 4:
+        issues.append({
+            "code": "POLITE_HIGH",
+            "label": "공손체 어미 비율이 높음",
+            "reason": "습니다/합니다/돼요 같은 공손체 어미 비율이 높아 기계적인 느낌을 줄 수 있습니다. "
+                      " '-다', '-인 편이다', '-할 수 있다' 같은 어미도 섞어 보세요.",
+        })
+
+    # 3) 느낌표 과다
+    if exclam_ratio >= 0.25:
+        issues.append({
+            "code": "EXCLAM_HIGH",
+            "label": "느낌표 사용이 많음",
+            "reason": "느낌표가 많이 사용되어 광고·선동성 문장처럼 보일 수 있습니다. "
+                      "중요한 한두 문장에만 느낌표를 남기고 나머지는 마침표로 정리해 주세요.",
+        })
+
+    # 4) 문의/상담 표현 & 전화번호
+    if cta_hits >= 3 or phone_hits > 0:
+        issues.append({
+            "code": "PROMO_STRONG",
+            "label": "문의/상담 표현 비중이 높음",
+            "reason": "상담/문의/예약/이벤트/전화번호 등의 표현이 많아 과도한 영업성 문장처럼 보일 수 있습니다. "
+                      "본문에서는 정보·경험 위주로 쓰고 마지막에만 간단히 안내를 넣는 편이 좋습니다.",
+        })
+
+    # 5) 정보 안내 + 후기 문장이 많이 섞여 있을 때
+    if info_hits >= 5 and review_hits >= 5:
+        issues.append({
+            "code": "INFO_REVIEW_MIXED",
+            "label": "정보 안내와 후기 문장이 섞여 있음",
+            "reason": "안내/정의/조건 설명과 실제 사용 후기 문장이 섞여 있습니다. "
+                      "'정보 안내'와 '사용 후기'를 소제목으로 나누면 가독성이 좋아집니다.",
+        })
+
+    # 6) 또한/그리고/그러나/따라서 등 접속사 반복
+    if connective_start_hits >= 3 or connective_hits >= max(5, n_sent):
+        issues.append({
+            "code": "CONNECTIVE_REPEAT",
+            "label": "또한/그리고 등 접속사가 반복됨",
+            "reason": "또한/그리고/그러나/따라서 같은 접속사가 자주 반복됩니다. "
+                      "모든 문장을 접속사로 시작하기보다는, 핵심 키워드를 문장 앞에 두고 "
+                      "문단 사이 연결이 필요할 때만 접속사를 사용하는 편이 자연스럽습니다.",
+        })
+
+    # 7) '많이 늘어나고 있습니다' 식 추세 표현인데 숫자/기준이 없는 경우
+    if trend_hits >= 1 and not has_number:
+        issues.append({
+            "code": "VAGUE_TREND",
+            "label": "근거 없는 추세 표현이 있음",
+            "reason": "‘많이 늘어나고 있습니다’, ‘수요가 높아지고 있습니다’ 같은 추세 표현이 나오지만 "
+                      "구체적인 숫자나 기간, 기준이 없습니다. 최근 1~2년 기준의 통계·검색량·문의 건수 등 "
+                      "간단한 근거를 함께 적어 주면 설득력과 신뢰도가 올라갑니다.",
+        })
+
+    # 프론트 호환용 필드들
+    return {
+        "ok": True,
+        "doc_type": "general",
+        "type": "general",
+        "scores": {"info": 0.0, "review": 0.0, "promo": 0.0},
+        "issues": issues,
+        "features": {
+            "tokens": n_tok,
+            "sentences": n_sent,
+            "avg_sentence_len": round(avg_len, 1),
+            "long_sentence_count": long_sent_count,
+            "info_hits": info_hits,
+            "review_hits": review_hits,
+            "cta_hits": cta_hits,
+            "first_person_hits": fp_hits,
+            "opinion_hits": opinion_hits,
+            "time_expr_hits": time_expr_hits,
+            "phone_hits": phone_hits,
+            "polite_ratio": round(polite_ratio, 3),
+            "exclam_ratio": round(exclam_ratio, 3),
+            "connective_hits": connective_hits,
+            "connective_start_hits": connective_start_hits,
+            "trend_hits": trend_hits,
+        },
+    }
+
 @app.post("/ai_local_detect_v2")
 @require_user
 def ai_local_detect_v2():
@@ -2480,6 +3226,7 @@ def ai_local_detect_v2():
     - 토큰 길이 / TTR / 반복 bigram
     - 문장 끝 어미(습니다/합니다 계열) + 접속사 반복 + 전체 길이 패턴까지 반영
     - 결과 점수: 0~100, score ↑일수록 AI 가능성 ↑
+    - 추가: 문장 단위로 ai_pattern 구간(items)도 같이 반환
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -2524,11 +3271,12 @@ def ai_local_detect_v2():
             repeated = sum(v for v in c.values() if v >= 2)
             rep_rate = repeated / len(bigrams)
 
-        # 3) 문체 패턴 휴리스틱
+        # 3) 문체 패턴 휴리스틱 (전체 문단 기준)
         polite_ends = ("습니다.", "합니다.", "됩니다.", "있습니다.", "것입니다.")
         ai_connect = [
-            "또한", "한편", "따라서", "이러한", "그렇기에", "종합하면",
-            "무엇보다", "게다가", "하지만", "그러나", "먼저", "둘째", "마지막으로",
+            "또한", "그리고", "그러므로", "그래서", "따라서",
+            "하지만", "그러나", "한편", "게다가", "이와 함께",
+            "뿐만 아니라", "무엇보다", "먼저", "다음으로", "종합하면",
         ]
 
         polite_count = 0
@@ -2566,7 +3314,8 @@ def ai_local_detect_v2():
         pattern_score = min(1.0, pattern_score)
 
         # 4) 스코어링 (0~100)
-        #   - avg_len ↑, ttr ↓, rep_rate ↑, pattern_score ↑ => AI 점수 ↑
+        #   - avg_len ↑, ttr ↓, rep_rate ↑, pattern_score ↑ => AI 패턴 의심도 ↑
+        #   - score: 0~100, 값이 클수록 AI 스타일 흔적이 많다는 의미 (글핏 ai 전략)
         s_len = min(1.0, avg_len / 30.0)          # 30 토큰 이상이면 최댓값 (더 공격적)
         s_ttr = 1.0 - min(1.0, ttr / 0.70)        # TTR 0.7 이하부터 점수↑
         s_rep = min(1.0, rep_rate / 0.18)         # 반복 bigram 18% 이상이면 최댓값
@@ -2586,21 +3335,98 @@ def ai_local_detect_v2():
             raw *= 0.7
 
         raw = max(0.0, min(1.0, raw))
-        score = int(round(raw * 100))
+        score = int(round(raw * 100))  # 0~100 → "AI 패턴 의심 지수(%)"
 
-        # 5) 라벨 – 예비필터용으로 AI 쪽 임계값을 낮게 둠
-        if score >= 55:
-            label = "ai_suspected"
+        # 5) 라벨 – 글핏 ai 전략: 사람/AI 단정 대신 3단계 위험도로만 표기
+        #    score ↑ == AI 패턴 의심도 ↑
+        if score >= 70:
+            label = "ai_risk_high"
             level = "high"
-            msg = "AI 작성 패턴에 매우 가깝습니다. (로컬 휴리스틱 1차 필터, 참고용입니다.)"
-        elif score >= 35:
-            label = "borderline"
+            msg = f"AI 패턴 의심 지수가 약 {score}% 수준입니다. 글 전체에 AI 스타일 흔적이 많이 포함된 원고입니다. (로컬 지표, 참고용)"
+        elif score >= 45:
+            label = "ai_risk_mid"
             level = "medium"
-            msg = "AI 영향이 있거나, AI/사람 글이 섞였을 가능성이 있습니다."
+            msg = f"AI 패턴 의심 지수가 약 {score}% 수준입니다. 일부 문단에서 AI 스타일 흔적이 관찰됩니다. (로컬 지표, 참고용)"
         else:
-            label = "human_like"
+            label = "ai_risk_low"
             level = "low"
-            msg = "사람이 쓴 글 패턴에 더 가깝게 보입니다. (그래도 확정 판정은 아닙니다.)"
+            msg = f"AI 패턴 의심 지수가 약 {score}% 수준입니다. AI 스타일 흔적 비율이 상대적으로 낮은 원고입니다. (로컬 지표, 참고용)"
+
+        # 6) 세부 AI 패턴 구간 추출 (문장 단위)
+        #    -> 에디터 중앙 하이라이트/추천항목에서 그대로 사용 가능
+        spans = _sentence_spans(text)
+        items = []
+        for start, end, sent in spans:
+            s_norm = _norm_for_dup(sent)
+            toks = _ko_word_norm(sent)
+
+            L = len(s_norm)
+
+            # 6-1) 문장 길이 기반 점수 (너무 짧은 문장은 제외)
+            len_score = 0.0
+            if L >= 80:
+                len_score += 0.25
+            elif L >= 50:
+                len_score += 0.15
+
+            # 6-2) 접속사/전형적 이어주기 패턴
+            s_connect_count = sum(sent.count(c) for c in ai_connect)
+            connect_score = min(0.3, s_connect_count * 0.1)
+
+            # 6-3) 공손체 어미
+            polite_flag = sent.strip().endswith(polite_ends)
+            polite_score = 0.25 if polite_flag else 0.0
+
+            # 6-4) 단어 반복 패턴 (문장 내부)
+            tf = {}
+            for t in toks:
+                tf[t] = tf.get(t, 0) + 1
+            dup_terms = [t for t, v in tf.items() if v >= 3]
+            dup_score = min(0.3, len(dup_terms) * 0.12)
+
+            sent_raw = len_score + connect_score + polite_score + dup_score
+            sent_raw = max(0.0, min(1.0, sent_raw))
+
+            # 문장 단위로 "AI 패턴"으로 볼 수 있는 기준
+            if sent_raw >= 0.55 or (polite_flag and s_connect_count >= 1) or len(dup_terms) >= 2:
+                reasons = []
+                if polite_flag:
+                    reasons.append("공손체 어미(습니다/합니다) 반복")
+                if s_connect_count >= 1:
+                    reasons.append("접속사/전형적인 이어주기 표현 다수 사용")
+                if len(dup_terms) >= 2:
+                    reasons.append("동일 단어가 한 문장 안에서 여러 번 반복")
+                if L >= 120:
+                    reasons.append("길고 비슷한 문장 길이가 반복되는 경향")
+
+                # 문장 단위 AI 패턴 레벨 (글핏 ai 전략용 3단계)
+                if sent_raw >= 0.8:
+                    sent_level = 3
+                    sev = "high"
+                elif sent_raw >= 0.6:
+                    sent_level = 2
+                    sev = "medium"
+                else:
+                    sent_level = 1
+                    sev = "low"
+
+                items.append({
+                    "type": "ai_pattern",
+                    "category": "AI패턴",
+                    "subType": "sentence_pattern",
+                    "score": round(sent_raw, 3),
+                    # 기존 severity 그대로 두되, 내부 기준은 레벨 기반으로 통일
+                    "severity": sev,
+                    # 글핏 ai 전략용: 1(약함) ~ 3(강함)
+                    "aiLevel": sent_level,
+                    "startIndex": start,
+                    "endIndex": end,
+                    "text": sent,
+                    "before": text[max(0, start - 30): start],
+                    "after": text[end: min(len(text), end + 30)],
+                    "reason": " / ".join(reasons) or "AI에서 자주 보이는 문장 구조",
+                    "source": "local-ai-v2",
+                })
 
         signals = {
             "tokens": n_tokens,
@@ -2621,16 +3447,45 @@ def ai_local_detect_v2():
 
         return jsonify({
             "ok": True,
-            "score": score,
-            "label": label,
-            "level": level,
+            "score": score,                       # 0~100, 높을수록 AI 가능성 ↑
+            "label": label,                       # ai_suspected / borderline / human_like
+            "level": level,                       # high / medium / low
             "message": msg,
-            "signals": signals,
+            "signals": signals,                   # 디버깅용 세부 지표
+            "items": items,                       # 문장 단위 AI 패턴 구간
+            "ai_suspicious_sentences": len(items)
         })
 
     except Exception as e:
         import traceback
         traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# === [NEW] 문서 스타일 프로파일링 엔드포인트 ===
+@app.post("/doc_style_profile")
+@require_user
+def doc_style_profile():
+    """
+    원고의 문체/용도 유형을 단순 규칙 기반으로 분석.
+    - type: info | review | promo | unknown
+    - scores: 각 유형별 0~1 점수
+    - features: 규칙 판단에 사용한 간단 지표
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "").strip()
+
+        if not text:
+            return jsonify({"ok": False, "error": "No text provided"}), 400
+
+        # 크기 제한 공통 적용
+        limit_resp = enforce_size_limit_or_400(text)
+        if limit_resp:
+            return limit_resp
+
+        prof = analyze_doc_style(text)
+        return jsonify(prof)
+    except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.post("/guide_keyword_count")

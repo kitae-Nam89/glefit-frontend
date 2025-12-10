@@ -845,6 +845,11 @@ async function decodeTxtBest(arrayBuffer) {
   const [aiLocalResult, setAiLocalResult] = useState(null);
   const [aiLocalError, setAiLocalError] = useState("");
 
+  // 문서 스타일/서술형 프로파일 (정보성/후기 등)
+  const [styleProfile, setStyleProfile] = useState(null);
+  const [styleLoading, setStyleLoading] = useState(false);
+  const [styleError, setStyleError] = useState("");
+
   // 키워드(파일명 자동 채움, **세션 내 파일별 유지**)
   const [keywordInput, setKeywordInput] = useState("");
   const [keywordByFile, setKeywordByFile] = useState({});
@@ -1088,6 +1093,15 @@ const loadFileContent = async (file, idx = null) => {
   } else {
     setAiLocalResult(null);
     setAiLocalError("");
+  }
+
+  // 📌 파일이 바뀔 때: 문서 스타일/서술형 프로파일 복원
+  if (cached && cached.styleProfile) {
+    setStyleProfile(cached.styleProfile);
+    setStyleError("");
+  } else {
+    setStyleProfile(null);
+    setStyleError("");
   }
 
 // ❌ 기존: 파일 이동시 중복결과/필수가이드 모두 초기화됨 → 문제 발생
@@ -1803,6 +1817,162 @@ const handleAiLocalDetect = async () => {
     alert("AI 탐지(v1) 실패: " + msg);
   } finally {
     setAiLocalLoading(false);
+  }
+};
+
+// ✅ 문서 스타일/서술형 프로파일 (/doc_style_profile)
+const handleDocStyleProfile = async () => {
+  if (!text || !text.trim()) {
+    alert("검사할 원고가 비어 있습니다.");
+    return;
+  }
+
+  try {
+    setStyleLoading(true);
+    setStyleError("");
+    setStyleProfile(null);
+
+    const res = await axios.post(
+      `${API_BASE}/doc_style_profile`,
+      { text },
+      { headers: authHeaders() }   // 🔐 로그인 토큰 포함
+    );
+    const data = res.data || {};
+
+    if (data.ok === false && data.error) {
+      setStyleError(data.error);
+      alert("문서 스타일 분석 오류: " + data.error);
+      return;
+    }
+
+    // 전체 응답을 그대로 보관 (doc_type / issues 등)
+    setStyleProfile(data);
+
+    // 📌 현재 파일에 스타일 프로파일도 캐시
+    if (files && fileIndex >= 0 && files[fileIndex]) {
+      const curFile = files[fileIndex];
+      setFileResults((prev) => ({
+        ...prev,
+        [curFile.name]: {
+          ...(prev[curFile.name] || {}),
+          styleProfile: data,
+        },
+      }));
+    }
+  } catch (e) {
+    console.error("doc_style_profile 실패:", e);
+    const msg =
+      e?.response?.data?.error ||
+      e?.message ||
+      "알 수 없는 오류";
+    setStyleError(msg);
+    alert("문서 스타일 분석 실패: " + msg);
+  } finally {
+    setStyleLoading(false);
+  }
+};
+
+// =======================
+// 🔥 배치 실행(여러 파일 반복 실행)
+// =======================
+
+// 업로드된 파일 전체 AI 검사 실행
+const handleAiBatchDetect = async () => {
+  if (!files || !files.length) {
+    alert("업로드된 파일이 없습니다.");
+    return;
+  }
+
+  setAiLocalLoading(true);
+
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const textContent = await extractFileText(f);
+
+      try {
+        const res = await axios.post(`${API_BASE}/ai_local_detect_v2`, { text: textContent });
+        const data = res.data || {};
+
+        if (data.ok === false && data.error) {
+          // 파일별 오류는 콘솔에만 찍고 계속 진행
+          console.error(`AI 탐지 실패 (${f.name}):`, data.error);
+        } else {
+          // 🔹 파일별 캐시에 저장
+          setFileResults((prev) => ({
+            ...prev,
+            [f.name]: {
+              ...(prev[f.name] || {}),
+              aiLocal: data,
+            },
+          }));
+
+          // 🔹 현재 화면에서 보고 있는 파일이면 상태도 갱신
+          if (i === fileIndex) {
+            setText(normalizeForIndexing(textContent));
+            setAiLocalResult(data);
+          }
+        }
+      } catch (e) {
+        console.error(`AI 탐지 요청 실패 (${f.name}):`, e?.message || e);
+      }
+    }
+
+    alert("AI 탐지(참고) 전체 검사가 완료되었습니다.");
+  } finally {
+    setAiLocalLoading(false);
+  }
+};
+
+
+// 업로드된 파일 전체 문체/서술형 분석 실행
+const handleBatchStyleProfile = async () => {
+  if (!files || !files.length) {
+    alert("업로드된 파일이 없습니다.");
+    return;
+  }
+
+  setStyleLoading(true);
+
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const textContent = await extractFileText(f);
+
+      try {
+        const res = await axios.post(
+          `${API_BASE}/doc_style_profile`,
+          { text: textContent },
+          { headers: authHeaders() }
+        );
+        const data = res.data || {};
+
+        if (data.ok === false && data.error) {
+          console.error(`문서 스타일 분석 실패 (${f.name}):`, data.error);
+        } else {
+          // 🔹 파일별 캐시에 저장
+          setFileResults((prev) => ({
+            ...prev,
+            [f.name]: {
+              ...(prev[f.name] || {}),
+              styleProfile: data,
+            },
+          }));
+
+          // 🔹 현재 보고 있는 파일이면 즉시 반영
+          if (i === fileIndex) {
+            setText(normalizeForIndexing(textContent));
+            setStyleProfile(data);
+          }
+        }
+      } catch (e) {
+        console.error(`문서 스타일 분석 요청 실패 (${f.name}):`, e?.message || e);
+      }
+    }
+
+    alert("문체/서술형 분석 전체 검사가 완료되었습니다.");
+  } finally {
+    setStyleLoading(false);
   }
 };
 
@@ -4955,7 +5125,7 @@ return (
 
           {/* ✅ 로컬 AI 탐지(v1) – 서버 비용 없이 휴리스틱 기반 */}
           <button
-            onClick={!isGuest ? handleAiLocalDetect : undefined}
+            onClick={!isGuest ? handleAiBatchDetect : undefined}
             disabled={isGuest || aiLocalLoading}
             title={
               isGuest
@@ -4965,6 +5135,20 @@ return (
             style={isGuest ? lockedBtnStyle : undefined}
           >
             {aiLocalLoading ? "AI 탐지 중…" : "AI 탐지(참고)"}
+          </button>
+
+          {/* ✅ 문체/서술형 분석 – 정보성/후기 프로파일 */}
+          <button
+            onClick={!isGuest ? handleBatchStyleProfile : undefined}
+            disabled={isGuest || styleLoading}
+            title={
+              isGuest
+                ? "체험(게스트)에서는 사용이 제한됩니다."
+                : "정보성/후기 여부와 문장 패턴을 규칙 기반으로 분석합니다."
+            }
+            style={isGuest ? lockedBtnStyle : undefined}
+          >
+            {styleLoading ? "문체 분석 중…" : "문체/서술형 분석"}
           </button>
 
           {/* ✅ 전체 검사(배치) — 관리자 전용 */}
@@ -5101,6 +5285,64 @@ return (
             }}
           >
             AI 탐지 오류: {aiLocalError}
+          </div>
+        )}
+
+        {/* ✍️ 문서 스타일/서술형 프로파일 표시 */}
+        {styleProfile && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: 10,
+              borderRadius: 8,
+              background: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              fontSize: 13,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+              ✍️ 문서 스타일 분석
+              {styleProfile.doc_type && (
+                <span style={{ marginLeft: 6 }}>
+                  {styleProfile.doc_type === "info"
+                    ? "(정보성)"
+                    : styleProfile.doc_type === "review"
+                    ? "(후기/리뷰)"
+                    : `(${styleProfile.doc_type})`}
+                </span>
+              )}
+            </div>
+
+            {Array.isArray(styleProfile.issues) &&
+            styleProfile.issues.length > 0 ? (
+              <ul style={{ paddingLeft: 18, margin: 0 }}>
+                {styleProfile.issues.map((it, idx) => (
+                  <li key={idx} style={{ marginBottom: 4 }}>
+                    <strong>[{it.label || it.code || `규칙 ${idx + 1}`}]</strong>{" "}
+                    {it.reason || it.message}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div>특별히 크게 문제되는 패턴은 발견되지 않았습니다.</div>
+            )}
+          </div>
+        )}
+
+        {styleError && (
+          <div
+            style={{
+              marginTop: 6,
+              padding: 6,
+              borderRadius: 4,
+              background: "#fef2f2",
+              border: "1px solid #fecaca",
+              color: "#b91c1c",
+              fontSize: 12,
+            }}
+          >
+            문서 스타일 분석 오류: {styleError}
           </div>
         )}
 
