@@ -863,24 +863,26 @@ async function decodeTxtBest(arrayBuffer) {
   // 결과 패널 필터
   const [filterPolicyOnly, setFilterPolicyOnly] = useState(false);
 
-  // ====== (NEW) 중복/유사 탐지 상태 ======
-  // 단일 문서 내
-  const [intraExactGroups, setIntraExactGroups] = useState([]); // [{norm, occurrences:[{index,start,end,original}...]}]
-  const [intraSimilarPairs, setIntraSimilarPairs] = useState([]); // [{i,j,score,a:{start,end,original},b:{...}}]
+// ====== (NEW) 중복/유사 탐지 상태 ======
+// 단일 문서 내
+const [intraExactGroups, setIntraExactGroups] = useState([]); // [{norm, occurrences:[{index,start,end,original}...]}]
+const [intraSimilarPairs, setIntraSimilarPairs] = useState([]); // [{i,j,score,a:{start,end,original},b:{...}}]
 
-  // 교차(여러 문서 간)
-  const [interExactGroups, setInterExactGroups] = useState([]); // [{norm, occurrences:[{file,fileIndex,sentIndex,start,end,original}...]}]
-  const [, setInterSimilarPairs] = useState([]);
-  const [interSimilarGroups, setInterSimilarGroups] = useState([]);
+// 교차(여러 문서 간)
+const [interExactGroups, setInterExactGroups] = useState([]); // [{norm, occurrences:[{file,fileIndex,sentIndex,start,end,original}...]}]
+const [, setInterSimilarPairs] = useState([]);
+const [interSimilarGroups, setInterSimilarGroups] = useState([]);
+// 🔹 문서별 중복 비율 요약 (화면엔 상위 10건만 표시, 전체는 보고서에서)
+const [interDocSummary, setInterDocSummary] = useState([]);
 
-  // 교차 탐지 옵션
-  const [interMinLen, setInterMinLen] = useState(6);
-  const [interSimTh, setInterSimTh] = useState(0.70);
-  const [intraMinLen, setIntraMinLen] = useState(6);
-  const [intraSimTh, setIntraSimTh] = useState(0.70);
+// 교차 탐지 옵션
+const [interMinLen, setInterMinLen] = useState(5);
+const [interSimTh, setInterSimTh] = useState(0.50);
+const [intraMinLen, setIntraMinLen] = useState(5);
+const [intraSimTh, setIntraSimTh] = useState(0.50);
 
-  // 여러 문서 간 중복 탐지 진행 상태
-  const [isInterChecking, setIsInterChecking] = useState(false);
+// 여러 문서 간 중복 탐지 진행 상태
+const [isInterChecking, setIsInterChecking] = useState(false);
 
   const textareaRef = useRef(null);
 
@@ -1146,6 +1148,10 @@ const replaceAllFiles = async (arr) => {
   setInterExactGroups([]);
   setInterSimilarPairs([]);
   setInterSimilarGroups([]);
+
+  // 🔹 다문서 유사도 요약/진행 상태도 함께 초기화
+  setInterDocSummary([]);
+  setIsInterChecking(false);
 
   // 🔹 파일별 키워드 기본값 초기화 (파일명 기반)
   const initialKeywordMap = {};
@@ -3330,263 +3336,457 @@ const getFileTextMapWithLines = async () => {
   }
   return map;
 };
-// === NEW: 문서별 "통합" 중복문장 보고서 (모든 원고를 한 파일로) ===
+// === (교체 후) 현재 화면 기준 문서만 위한 중복문장 상세 보고서 ===
 const savePerDocDedupReportPDF = async () => {
   try {
-    if (!window.html2pdf) {
-      alert("html2pdf가 필요합니다.");
+    if (typeof window === "undefined" || !window.html2pdf) {
+      alert("PDF 생성 라이브러리(html2pdf)가 준비되지 않았습니다.");
       return;
     }
 
-    // 1) 파일별 매칭(정확/유사)을 문서 기준으로 재구성
-    const perDoc = new Map(); // file -> [{ line, text, kind, partnerFile, partnerLine, score }...]
+    if (!files?.length) {
+      alert("검사 대상 파일이 없습니다.");
+      return;
+    }
 
-    const push = (file, entry) => {
-      if (!file) return;
-      const arr = perDoc.get(file) || [];
-      arr.push(entry);
-      perDoc.set(file, arr);
+    const baseFile = files[fileIndex];
+    if (!baseFile) {
+      alert("현재 선택된 파일이 없습니다.");
+      return;
+    }
+
+    const baseName = baseFile.name || "기준 문서";
+    const totalFiles = files.length;
+
+    // ───────────────────────────────────
+    // 1) 이 기준 문서와 관련된 문서별 유사도 요약 추출
+    //    - interDocSummary 중 file === baseName 인 것만
+    //    - 5% 이상만 상세 표에 노출
+    //    - 1% 이상 5% 미만은 "5% 미만 묶음" 개수로만 표시
+    // ───────────────────────────────────
+    const THRESH = 5; // 5% 이상만 상세 노출
+
+    const allRowsForBase = Array.isArray(interDocSummary)
+      ? interDocSummary.filter((r) => r?.file === baseName)
+      : [];
+
+    const highRows = allRowsForBase
+      .filter((r) => {
+        const v =
+          typeof r?.ratio === "number"
+            ? r.ratio
+            : Number(r?.ratio || 0);
+        return v >= THRESH;
+      })
+      .sort((a, b) => {
+        const va =
+          typeof a?.ratio === "number"
+            ? a.ratio
+            : Number(a?.ratio || 0);
+        const vb =
+          typeof b?.ratio === "number"
+            ? b.ratio
+            : Number(b?.ratio || 0);
+        return vb - va;
+      });
+
+    const lowCount = allRowsForBase.filter((r) => {
+      const v =
+        typeof r?.ratio === "number"
+          ? r.ratio
+          : Number(r?.ratio || 0);
+      return v > 0 && v < THRESH;
+    }).length;
+
+    // 5% 이상 문서만 "실제 상세 하이라이트 대상"으로 사용
+    const allowedPartners = new Set(
+      highRows.map((r) => r.otherFile).filter(Boolean)
+    );
+
+    // ───────────────────────────────────
+    // 2) 기준 문서 원문 확보 (fileResults 캐시 우선, 없으면 text 상태)
+    // ───────────────────────────────────
+    const cachedText =
+      fileResults?.[baseName]?.text ??
+      fileResults?.[baseName]?.rawText ??
+      text ??
+      "";
+    const baseText = String(cachedText).replace(/\r\n/g, "\n");
+    const lines = baseText.split("\n");
+
+    // ───────────────────────────────────
+    // 3) 라인 단위 하이라이트 정보 구성
+    //
+    //    - interExactGroups / interSimilarGroups 에서
+    //      file === baseName 인 occurrence 들만 모음
+    //    - 그 occurrence 가 연결된 partnerFile 이
+    //      allowedPartners(5% 이상) 에 포함될 때만 강조
+    //    - start/end 는 쓰지 않고 line 기준으로만 강조
+    // ───────────────────────────────────
+    const highlightLines = new Map(); // lineNo(1-base) -> { kind, partners:Set }
+
+    const markLine = (lineNo, kind, partnerFile) => {
+      const ln = Number(lineNo || 0);
+      if (!ln || ln < 1 || ln > lines.length) return;
+      if (!partnerFile || !allowedPartners.has(partnerFile)) return;
+
+      let entry = highlightLines.get(ln);
+      if (!entry) {
+        entry = { kind, partners: new Set() };
+        highlightLines.set(ln, entry);
+      }
+      // 정확 매칭이 한 번이라도 있으면 kind를 "정확"으로 승격
+      if (entry.kind !== "정확" && kind === "정확") {
+        entry.kind = "정확";
+      }
+      entry.partners.add(partnerFile);
     };
 
-    const normText = (x) => (x?.original ?? x?.text ?? x?.sentence ?? "");
-    const truncate = (s, n = 140) => (s && s.length > n ? s.slice(0, n) + "…" : s);
+    const pushFromGroup = (group, kind) => {
+      if (!group) return;
+      const occs = group.occurrences || [];
+      if (!Array.isArray(occs) || !occs.length) return;
 
-    // 정확 중복 그룹 → 모든 조합을 문서별로 양방향 기록
-    (interExactGroups || []).forEach(g => {
-      const occ = g?.occurrences || [];
-      for (let i = 0; i < occ.length; i++) {
-        for (let j = i + 1; j < occ.length; j++) {
-          const a = occ[i], b = occ[j];
-          const ta = a?.original ?? a?.text ?? "";
-          const tb = b?.original ?? b?.text ?? ta;
+      // 기준 문서에 해당하는 occurrence만
+      const mine = occs.filter((o) => o?.file === baseName);
+      if (!mine.length) return;
 
-          push(a?.file, {
-            line: a?.line,
-            text: ta,
-            kind: "정확",
-            partnerFile: b?.file,
-            partnerLine: b?.line,
-            partnerText: normText(b), // ★ 추가
-            score: null
-          });
+      mine.forEach((a) => {
+        const lineNo =
+          Number(a?.line ?? a?.lineNo ?? a?.lineIndex ?? 0) || 0;
 
-          push(b?.file, {
-            line: b?.line,
-            text: tb,
-            kind: "정확",
-            partnerFile: a?.file,
-            partnerLine: a?.line,
-            partnerText: normText(a), // ★ 추가
-            score: null
-          });
-        }
-      }
-    });
+        // 같은 그룹 내에서의 상대 문서들
+        const partners = occs
+          .map((o) => o?.file)
+          .filter(
+            (f) =>
+              f && f !== baseName && allowedPartners.has(f)
+          );
 
-    // 유사 그룹 → pair 형식/cluster 형식을 모두 안전 처리해 양방향 기록
-    (interSimilarGroups || []).forEach(grp => {
-      const items = grp?.pairs || grp?.items || grp?.representatives || grp?.occurrences || [];
-      const asPair = items.length && (items[0]?.a || items[0]?.b);
+        if (!partners.length) return;
 
-      if (asPair) {
-        items.forEach(p => {
-          const a = p?.a || {}, b = p?.b || {};
-          const score = p?.score ?? p?.sim ?? p?.similarity ?? null;
+        partners.forEach((p) => markLine(lineNo, kind, p));
+      });
+    };
 
-          push(a?.file, {
-            line: a?.line,
-            text: normText(a),
-            kind: "유사",
-            partnerFile: b?.file,
-            partnerLine: b?.line,
-            partnerText: normText(b), // ★ 추가
-            score
-          });
+    (interExactGroups || []).forEach((g) =>
+      pushFromGroup(g, "정확")
+    );
+    (interSimilarGroups || []).forEach((g) =>
+      pushFromGroup(g, "유사")
+    );
 
-          push(b?.file, {
-            line: b?.line,
-            text: normText(b),
-            kind: "유사",
-            partnerFile: a?.file,
-            partnerLine: a?.line,
-            partnerText: normText(a), // ★ 추가
-            score
-          });
-        });
-      } else {
-        for (let i = 0; i < items.length; i++) {
-          for (let j = i + 1; j < items.length; j++) {
-            const a = items[i] || {}, b = items[j] || {};
-            const score = grp?.avg ?? grp?.score ?? grp?.similarity ?? null;
+    // ───────────────────────────────────
+    // 4) PDF DOM 구성
+    // ───────────────────────────────────
+    const esc = (s = "") =>
+      String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
 
-            push(a?.file, {
-              line: a?.line,
-              text: normText(a),
-              kind: "유사",
-              partnerFile: b?.file,
-              partnerLine: b?.line,
-              partnerText: normText(b), // ★ 추가
-              score
-            });
-
-            push(b?.file, {
-              line: b?.line,
-              text: normText(b),
-              kind: "유사",
-              partnerFile: a?.file,
-              partnerLine: a?.line,
-              partnerText: normText(a), // ★ 추가
-              score
-            });
-          }
-        }
-      }
-    });
-
-    // 2) PDF 루트 DOM + 커버
     const now = new Date();
-    const ymd = now.toLocaleDateString("ko-KR"); // 날짜만 (시간 X)
-    const exactCnt = (interExactGroups || []).length; // 정확 그룹 수
-    const simCnt = (interSimilarGroups || []).length; // 유사 그룹 수
+    const ymd = now.toLocaleDateString("ko-KR");
+
+    const holder = document.createElement("div");
+    holder.id = "glefit-perdoc-report-holder";
+    holder.style.position = "fixed";
+    holder.style.left = "-9999px";
+    holder.style.top = "0";
+    holder.style.width = "210mm";
+    holder.style.zIndex = "-1";
+    holder.style.backgroundColor = "#f3f4f6";
+    document.body.appendChild(holder);
 
     const root = document.createElement("div");
-    root.style.cssText = "width:190mm;min-height:297mm;box-sizing:border-box;background:#fff;font-family:'Noto Sans KR',Segoe UI,Roboto,Arial;color:#111";
+    root.id = "glefit-perdoc-report-root";
+    root.style.width = "190mm";
+    root.style.minHeight = "297mm";
+    root.style.boxSizing = "border-box";
+    root.style.margin = "0 auto";
+    root.style.padding = "12mm 10mm 14mm 10mm";
+    root.style.backgroundColor = "#ffffff";
+    root.style.fontFamily =
+      '"Noto Sans KR","Segoe UI",Roboto,"Apple SD Gothic Neo",sans-serif';
+    root.style.fontSize = "10pt";
+    root.style.color = "#111827";
 
-    // 표지 섹션
-    const totalFiles = files?.length ?? 0;
-    const matchedFiles = perDoc.size; // 문서별은 perDoc.size = 중복 발견 문서 수
-    const cover = buildCoverSection({
-      title: "다 문서 중복문장·유사 보고서 (원고별)",
-      dateStr: ymd,
-      targetSummary: `중복 발견 문서: ${matchedFiles}개 / 전체: ${totalFiles}개`,
-      stats: { fileCount: totalFiles, exactCount: exactCnt, similarCount: simCnt },
+    // 4-1) 타이틀 / 메타 정보
+    const hTitle = document.createElement("h1");
+    hTitle.textContent = "문서별 중복문장 상세 보고서";
+    hTitle.style.fontSize = "16pt";
+    hTitle.style.margin = "0 0 6mm";
+    hTitle.style.borderBottom = "1px solid #e5e7eb";
+    hTitle.style.paddingBottom = "3mm";
+    root.appendChild(hTitle);
+
+    const meta = document.createElement("div");
+    meta.style.fontSize = "9pt";
+    meta.style.color = "#4b5563";
+    meta.style.marginBottom = "6mm";
+    meta.innerHTML = `
+      <div><strong>기준 문서</strong> : ${esc(baseName)}</div>
+      <div>문서 위치 : ${fileIndex + 1} / ${totalFiles}</div>
+      <div>검사 일시 : ${esc(ymd)}</div>
+      <div>전체 검사 문서 수 : ${totalFiles}건</div>
+    `;
+    root.appendChild(meta);
+
+    // 4-2) 유사도 해석/주의 안내 (요약 보고서와 톤 맞춤)
+    const note = document.createElement("div");
+    note.style.fontSize = "9pt";
+    note.style.lineHeight = "1.5";
+    note.style.margin = "0 0 6mm 0";
+    note.style.color = "#374151";
+
+    note.innerHTML = `
+      <div style="font-weight:600; color:#111827; margin-bottom:1mm;">
+        ※ 유사도 결과 해석 안내
+      </div>
+
+      <div>
+        본 유사도 값은
+        <strong style="color:#111827;">내부 중복·재활용 위험도 참고 지표</strong>입니다.
+      </div>
+
+      <div style="margin-top:2mm;">
+        <span style="color:#6b7280;">구간 해석 :</span><br>
+        <span style="color:#2563eb; font-weight:600;">0~10%</span> 자연스러운 유사 /
+        <span style="color:#ca8a04; font-weight:600;">11~20%</span> 주의·부분 수정 /
+        <span style="color:#ea580c; font-weight:600;">21~30%</span> 재작성·집중 점검 /
+        <span style="color:#dc2626; font-weight:700;">31% 이상 재활용 의심</span>
+      </div>
+
+      <div style="margin-top:2mm;">
+        <span style="color:#6b7280;">표기 규칙 :</span><br>
+        <strong style="color:#111827;">‘그 외 유사율 5% 미만 문서’</strong> 건수는
+        <strong style="color:#111827;">유사율 1.0% 이상 ~ 4.9%</strong> 구간만 집계되며,<br>
+        <span style="color:#dc2626; font-weight:700;">
+          유사율 1% 미만(0% 포함)은 자동 분석 한계로 인해 별도로 표시되지 않습니다.
+        </span>
+      </div>
+    `;
+
+    root.appendChild(note);
+
+    // 11~20% 구간 해석 보충
+    const note2 = document.createElement("div");
+    note2.style.fontSize = "9pt";
+    note2.style.lineHeight = "1.5";
+    note2.style.margin = "0 0 6mm 0";
+    note2.style.color = "#374151";
+
+    note2.innerHTML = `
+      <div style="font-weight:600; color:#111827;">
+        ※ 11~20% 구간 해석 안내(20% 이하 실무 기준)
+      </div>
+
+      <div>
+        11~20% 구간은
+        <strong style="color:#111827;">동일 키워드·업종 특성으로 인해 자연스럽게 발생하는 유사 패턴</strong>이
+        일부 포함될 수 있습니다.
+      </div>
+
+      <div style="margin-top:2mm;">
+        이 구간은 <strong style="color:#111827;">중복 의심 구간이 아니라, 추가 검토가 필요한 관리 구간</strong>으로 해석합니다.<br>
+        동일 키워드 반복 위주의 유사도는 실사용에 큰 문제가 없으며,<br>
+        <span style="color:#111827; font-weight:600;">
+          문장 구조가 동일한 구간만 선택적으로 수정할 것을 권장합니다.
+        </span>
+      </div>
+    `;
+    root.appendChild(note2);
+
+    // 4-3) 기준 문서와 5% 이상으로 겹치는 문서 목록 표
+    const secSummary = document.createElement("div");
+    secSummary.style.margin = "0 0 8mm";
+
+    const h2 = document.createElement("h2");
+    h2.textContent = "기준 문서와 유사한 문서 목록 (5% 이상만)";
+    h2.style.fontSize = "12pt";
+    h2.style.margin = "0 0 3mm";
+    secSummary.appendChild(h2);
+
+    const desc = document.createElement("div");
+    desc.style.fontSize = "9pt";
+    desc.style.color = "#6b7280";
+    desc.style.marginBottom = "2mm";
+    desc.textContent =
+      "이 문서와 교차 중복·유사가 5% 이상인 문서만 정리한 표입니다.";
+    secSummary.appendChild(desc);
+
+    const table = document.createElement("table");
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+    table.style.fontSize = "9pt";
+
+    const thead = document.createElement("thead");
+    const trHead = document.createElement("tr");
+    ["상대 문서", "유사율(%)"].forEach((label, idx) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      th.style.textAlign = idx === 0 ? "left" : "right";
+      th.style.padding = "3px 2px";
+      th.style.borderBottom = "1px solid #d1d5db";
+      th.style.fontWeight = "600";
+      th.style.backgroundColor = "#f9fafb";
+      trHead.appendChild(th);
+    });
+    thead.appendChild(trHead);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+
+    if (highRows.length) {
+      highRows.forEach((r) => {
+        const tr = document.createElement("tr");
+
+        const tdName = document.createElement("td");
+        tdName.textContent = r.otherFile || "";
+        tdName.style.padding = "3px 2px";
+        tdName.style.borderBottom = "1px solid #f3f4f6";
+        tdName.style.textAlign = "left";
+
+        const tdRatio = document.createElement("td");
+        const v =
+          typeof r.ratio === "number"
+            ? r.ratio
+            : Number(r.ratio || 0);
+        tdRatio.textContent = v ? v.toFixed(1) : "-";
+        tdRatio.style.padding = "3px 2px";
+        tdRatio.style.borderBottom = "1px solid #f3f4f6";
+        tdRatio.style.textAlign = "right";
+
+        tr.appendChild(tdName);
+        tr.appendChild(tdRatio);
+        tbody.appendChild(tr);
+      });
+    } else {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 2;
+      td.textContent =
+        "5% 이상 중복/유사 문서가 없습니다.";
+      td.style.padding = "4px 2px";
+      td.style.textAlign = "left";
+      tbody.appendChild(td);
+    }
+
+    if (lowCount > 0) {
+      const tr = document.createElement("tr");
+      const tdName = document.createElement("td");
+      tdName.textContent = "그 외 유사율 5% 미만 문서";
+      tdName.style.padding = "3px 2px";
+      tdName.style.borderBottom = "1px solid #f3f4f6";
+      tdName.style.textAlign = "left";
+
+      const tdRatio = document.createElement("td");
+      tdRatio.textContent = `${lowCount}건`;
+      tdRatio.style.padding = "3px 2px";
+      tdRatio.style.borderBottom = "1px solid #f3f4f6";
+      tdRatio.style.textAlign = "right";
+
+      tr.appendChild(tdName);
+      tr.appendChild(tdRatio);
+      tbody.appendChild(tr);
+    }
+
+    table.appendChild(tbody);
+    secSummary.appendChild(table);
+    root.appendChild(secSummary);
+
+    // 4-4) 원고 전문 + 중복 라인 강조
+    const secText = document.createElement("div");
+    secText.style.margin = "0 0 8mm";
+
+    const h2Text = document.createElement("h2");
+    h2Text.textContent = "기준 문서 전체 텍스트 (중복 구간 강조)";
+    h2Text.style.fontSize = "12pt";
+    h2Text.style.margin = "0 0 3mm";
+    secText.appendChild(h2Text);
+
+    const legend = document.createElement("div");
+    legend.style.fontSize = "9pt";
+    legend.style.color = "#6b7280";
+    legend.style.marginBottom = "2mm";
+    legend.innerHTML = `
+      <span style="font-weight:600; color:#b91c1c;">굵은 붉은색 줄</span> :
+      다른 문서와 중복·유사(5% 이상 구간에 포함된 문서 기준)로 검출된 줄입니다.
+    `;
+    secText.appendChild(legend);
+
+    const pre = document.createElement("pre");
+    pre.style.fontFamily =
+      '"SFMono-Regular","Menlo","Consolas","Liberation Mono",monospace';
+    pre.style.fontSize = "8.5pt";
+    pre.style.backgroundColor = "#f9fafb";
+    pre.style.border = "1px solid #e5e7eb";
+    pre.style.borderRadius = "4px";
+    pre.style.padding = "6px 8px";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.wordBreak = "break-word";
+    pre.style.margin = "0";
+
+    lines.forEach((lineText, idx) => {
+      const lineNo = idx + 1;
+      const info = highlightLines.get(lineNo);
+
+      const lineWrapper = document.createElement("div");
+      lineWrapper.style.display = "flex";
+
+      const num = document.createElement("span");
+      num.textContent = String(lineNo).padStart(3, " ");
+      num.style.width = "28px";
+      num.style.marginRight = "6px";
+      num.style.color = "#9ca3af";
+
+      const textSpan = document.createElement("span");
+      const safe = esc(lineText || "");
+
+      if (info) {
+        textSpan.innerHTML = `<span style="
+          font-weight:700;
+          color:#b91c1c;
+          background:#fee2e2;
+          box-decoration-break:clone;
+          -webkit-box-decoration-break:clone;
+        ">${safe || " "}</span>`;
+      } else {
+        textSpan.innerHTML = safe || " ";
+      }
+
+      lineWrapper.appendChild(num);
+      lineWrapper.appendChild(textSpan);
+      pre.appendChild(lineWrapper);
     });
 
-    // 3) 문서별 섹션(파일명 오름차순)
-    const fileNames = Array.from(perDoc.keys()).sort((a, b) => String(a).localeCompare(String(b), 'ko'));
+    secText.appendChild(pre);
+    root.appendChild(secText);
 
-    if (!fileNames.length) {
-      const none = document.createElement("div");
-      none.style.cssText = "color:#64748b";
-      none.textContent = "중복문장·유사 결과가 없습니다.";
-      root.appendChild(none);
-    } else {
-      fileNames.forEach((fname, idx) => {
-        const sec = document.createElement("div");
-        sec.style.cssText = "margin:10mm 0 0";
+    holder.appendChild(root);
 
-        const h2 = document.createElement("h2");
-        h2.textContent = `${idx + 1}. ${fname}`;
-        h2.style.cssText = "margin:0 0 4mm;border-bottom:1px solid #e5e7eb;padding-bottom:3mm";
-        sec.appendChild(h2);
+    // ───────────────────────────────────
+    // 5) PDF 생성
+    // ───────────────────────────────────
+    const safeName = String(baseName || "기준문서").replace(
+      /[\\/:*?"<>|]/g,
+      "_"
+    );
 
-        const entries = perDoc.get(fname) || [];
+    const opt = {
+      margin: [0, 0, 0, 0],
+      filename: `${safeName}_중복문장_상세보고서.pdf`,
+      image: { type: "jpeg", quality: 0.98 },
+      html2canvas: { scale: 1 },
+      jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+    };
 
-        // 같은 줄을 묶음
-        const byLine = new Map();
-        entries.forEach(e => {
-          const k = e?.line ?? "-";
-          const arr = byLine.get(k) || [];
-          arr.push(e);
-          byLine.set(k, arr);
-        });
-
-        const lines = Array.from(byLine.keys()).sort((a, b) => (Number(a || 0) - Number(b || 0)));
-
-        lines.forEach(ln => {
-          const box = document.createElement("div");
-          box.style.cssText = "border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin:6px 0;background:#fff;font-size:11pt;line-height:1.7";
-
-          const first = (byLine.get(ln) || [])[0] || {};
-          const esc = (s = "") => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          box.innerHTML = `<div style="color:#0f172a"><b>${ln}줄</b> — ${esc(first?.text || "")}</div>`;
-
-          (byLine.get(ln) || []).forEach(m => {
-            const scoreStr = (typeof m?.score === "number")
-              ? `(유사도 ${m.score.toFixed(3)})`
-              : (m?.score ? `(유사도 ${String(m.score)})` : "");
-            const kind = m?.kind === "정확" ? "정확" : "유사";
-            const meta = `${m?.partnerFile || ""}${m?.partnerLine ? ` · ${m.partnerLine}줄` : ""}`;
-            const row = document.createElement("div");
-            row.style.cssText = "margin-top:4px;color:#475569";
-            const partnerTextHtml = m?.partnerText ? ` — <span style="color:#0f172a">${esc(truncate(m.partnerText))}</span>` : "";
-            row.innerHTML = `↔ <b>${kind}</b> · ${esc(meta)}${scoreStr}${partnerTextHtml}`;
-            box.appendChild(row);
-          });
-
-          sec.appendChild(box);
-        });
-
-        if (!lines.length) {
-          const none2 = document.createElement("div");
-          none2.style.cssText = "color:#64748b";
-          none2.textContent = "이 문서에 대한 중복문장·유사 결과가 없습니다.";
-          sec.appendChild(none2);
-        }
-
-        root.appendChild(sec);
-      });
-    }
-// 4) 저장 — 대량 안정화: 섹션 단위로 순차 렌더링
-const holder = document.createElement("div");
-holder.style.position = "fixed";
-holder.style.left = "-9999px";
-document.body.appendChild(holder);
-
-const pageOpts = {
-  margin: 0,
-  filename: "중복문장_원고별.pdf",
-  image: { type: "jpeg", quality: 0.98 },
-  html2canvas: { scale: 1.6, useCORS: true, backgroundColor: "#ffffff" },
-  jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-};
-
-// 4-1) 렌더할 페이지 DOM 조각 만들기 (0페이지 = 커버, 이후 섹션)
-const pages = [];
-(() => {
-  // 0페이지 = 커버
-  const p0 = document.createElement("div");
-  p0.style.cssText = "width:190mm;min-height:297mm;box-sizing:border-box;background:#fff";
-  p0.appendChild(cover.cloneNode(true)); // 커버만 단독 페이지로
-  pages.push(p0);
-
-  // 1번 인덱스부터는 root에 쌓인 문서 섹션들
-  for (let i = 1; i < root.children.length; i++) {
-    const page = document.createElement("div");
-    page.style.cssText =
-      "width:190mm;min-height:297mm;box-sizing:border-box;padding:16mm 20mm;background:#fff";
-    page.appendChild(root.children[i].cloneNode(true));
-    pages.push(page);
+    await window.html2pdf().set(opt).from(root).save();
+    document.body.removeChild(holder);
+  } catch (e) {
+    console.error("savePerDocDedupReportPDF error:", e);
+    alert("문서별 중복문장 상세 보고서 생성 중 오류가 발생했습니다.");
   }
-})();
-
-// 4-2) 순차 렌더링 (캔버스 한계 회피)
-let worker = null;
-for (let i = 0; i < pages.length; i++) {
-  holder.appendChild(pages[i]);
-  if (i === 0) {
-    worker = window.html2pdf().set(pageOpts).from(pages[i]).toPdf();
-  } else {
-    worker = worker
-      .get("pdf")
-      .then((pdf) => {
-        pdf.addPage();
-      })
-      .from(pages[i])
-      .toContainer()
-      .toCanvas()
-      .toPdf();
-  }
-}
-
-// 4-3) 저장 & 정리
-await worker.save();
-document.body.removeChild(holder);
-;
-} catch (e) {
-  console.error(e);
-  alert("문서별 통합 PDF 생성 실패: " + (e?.message || "Unknown error"));
-}
 };
 
 // ========= (NEW) 여러 문서 간 중복문장/유사 =========
@@ -3594,104 +3794,330 @@ const handleInterDedup = async () => {
   // 이미 검사 중이면 중복 클릭 무시
   if (isInterChecking) return;
 
-  const localCompute = async (arr, lineIdxMap) => {
-    const MIN = Number(interMinLen) || 6;
-    const TH  = Number(interSimTh) || 0.88;
+  // 새 교차 탐지 시작 시, 이전 요약은 비워두고 다시 계산
+  setInterDocSummary([]);
 
-    // 1) 문장 분할 (간단: 마침표/개행 기준) + 길이 필터
-    const split = (name, txt) => {
-      const s = String(txt || "");
-      const parts = s.split(/(?<=[\.!?。！？])\s+|\n+/g);
-      let off = 0;
-      const out = [];
-      for (const seg of parts) {
-        const t = seg || "";
-        const i = s.indexOf(seg, off);
-        if (i < 0) continue;
-        const j = i + seg.length;
-        off = j;
-        const core = t.replace(/\s+/g, "");
-        if (core.length >= MIN) {
-          out.push({
-            file: name,
-            original: t,
-            text: t,
-            start: i,
-            end: j,
-            line: lineNoFromIndex(lineIdxMap[name] || [], i),
-          });
-        }
+const localCompute = async (arr, lineIdxMap) => {
+  const MIN = Number(interMinLen) || 6;
+  // 🔹 interSimTh가 비어있을 때도 너무 빡세지 않게 기본값 0.70 적용
+  const TH  = Number(interSimTh) || 0.70;
+
+  // 1) 문장 분할 (간단: 마침표/개행 기준) + 길이 필터
+  const split = (name, txt) => {
+    const s = String(txt || "");
+    const parts = s.split(/(?<=[\.!?。！？])\s+|\n+/g);
+    let off = 0;
+    const out = [];
+    for (const seg of parts) {
+      const t = seg || "";
+      const i = s.indexOf(seg, off);
+      if (i < 0) continue;
+      const j = i + seg.length;
+      off = j;
+      const core = t.replace(/\s+/g, "");
+      if (core.length >= MIN) {
+        out.push({
+          file: name,
+          original: t,
+          text: t,
+          start: i,
+          end: j,
+          line: lineNoFromIndex(lineIdxMap[name] || [], i),
+        });
       }
-      return out;
+    }
+    return out;
+  };
+
+  // 2) 전 문서 문장 수집
+  const all = [];
+  for (const { name, text } of arr) all.push(...split(name, text));
+
+  // 🔹 2-1) 문서별 통계 준비 (total / dup sentence set)
+  const docMap = new Map();
+  for (const s of all) {
+    const f = s.file || "";
+    if (!f) continue;
+    let info = docMap.get(f);
+    if (!info) {
+      info = { file: f, total: 0, dupKeys: new Set() };
+      docMap.set(f, info);
+    }
+    info.total += 1;
+  }
+
+  const makeKey = (obj) => `${obj.file || ""}::${obj.line || 0}::${obj.start || 0}`;
+
+  // 3) 정확 중복: 정규화 키로 그룹
+  const canonMap = new Map();
+  for (const s of all) {
+    const key = canonKR(s.original || s.text || "");
+    if (!key) continue;
+    const v = canonMap.get(key) || [];
+    v.push({ file: s.file, line: s.line, start: s.start, original: s.original });
+    canonMap.set(key, v);
+  }
+  const exact_groups = Array.from(canonMap.values())
+    .filter((occ) => {
+      // 서로 다른 파일에서 최소 2회 이상
+      const files = new Set(occ.map((o) => o.file));
+      return files.size >= 2;
+    })
+    .map((occ, idx) => ({ id: idx + 1, occurrences: occ }));
+
+  // 🔹 3-1) 정확 중복에 포함된 문장 → dupKeys에 반영
+  for (const g of exact_groups) {
+    for (const o of g.occurrences || []) {
+      const f = o.file || "";
+      const info = docMap.get(f);
+      if (!info) continue;
+      info.dupKeys.add(makeKey(o));
+    }
+  }
+
+  // 4) 유사 페어: 서로 다른 파일끼리만, Jaccard n-gram(3)
+  const pairs = [];
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const A = all[i],
+        B = all[j];
+      if (A.file === B.file) continue;
+      const a = A.original || A.text || "";
+      const b = B.original || B.text || "";
+      // 정확중복은 유사에서 제외
+      if (canonKR(a) === canonKR(b)) continue;
+      const score = jaccardByNgram(a, b, 3);
+      if (score >= TH) {
+        const pa = { file: A.file, line: A.line, start: A.start, original: A.original };
+        const pb = { file: B.file, line: B.line, start: B.start, original: B.original };
+        pairs.push({
+          a: pa,
+          b: pb,
+          score: Number(score.toFixed(3)),
+        });
+
+        // 🔹 유사 페어에 포함된 문장도 dupKeys에 반영
+        const ia = docMap.get(pa.file || "");
+        if (ia) ia.dupKeys.add(makeKey(pa));
+        const ib = docMap.get(pb.file || "");
+        if (ib) ib.dupKeys.add(makeKey(pb));
+      }
+    }
+  }
+
+  // 5) 상태 반영 (UI 동일 구조)
+  setInterExactGroups(exact_groups);
+  setInterSimilarPairs(pairs);
+
+  // 유사 페어 클러스터링(완전동일 제외)
+  const simPairsNoExact = (pairs || []).filter((p) => {
+    const s = Number(p?.score ?? 0);
+    const a = p?.a?.original ?? p?.a?.text ?? "";
+    const b = p?.b?.original ?? p?.b?.text ?? "";
+    if (s >= 0.9995) return false;
+    if (canonKR(a) === canonKR(b)) return false;
+    return true;
+  });
+
+  const mergeTh = Number(interSimTh) || 0.70;
+  const repMergeTh = Math.max((Number(interSimTh) || 0.70) - 0.05, 0.65);
+  const groups = clusterSimilarPairs(simPairsNoExact, mergeTh, repMergeTh);
+  setInterSimilarGroups(groups);
+
+  // 🔹 5-1) 문서쌍별 유사도 집계 (겹치는 글자수 기준, A↔B 대칭)
+  const pairStats = new Map(); // key = "fileA||fileB" (사전순)
+
+  // 한 문장(세그먼트) 길이 계산: 공백 제거 + start/end 있으면 그 구간 길이 우선
+  const segLen = (node) => {
+    if (!node) return 0;
+    const raw = (node.original ?? node.text ?? "")
+      .toString()
+      .replace(/\s+/g, "");
+    const s = Number(node.start ?? node.startIndex ?? 0);
+    const e = Number(node.end ?? node.endIndex ?? 0);
+    const byPos = e > s ? e - s : 0;
+    const len = byPos || raw.length;
+    return len > 0 ? len : 0;
+  };
+
+  // 문장 위치 기준 고유키 (makeKey랑 이름 겹치지 않게 별도 사용)
+  const makeInterKey = (obj) =>
+    `${obj.file || ""}::${obj.line || 0}::${obj.start || 0}`;
+
+  const getPairStat = (fa, fb) => {
+    const A = String(fa || "");
+    const B = String(fb || "");
+    if (!A || !B || A === B) return null;
+    const [f1, f2] = A <= B ? [A, B] : [B, A];
+    const key = `${f1}||${f2}`;
+    let rec = pairStats.get(key);
+    if (!rec) {
+      rec = {
+        fileA: f1,
+        fileB: f2,
+        keysA: new Set(),
+        keysB: new Set(),
+        sharedLenA: 0,
+        sharedLenB: 0,
+      };
+      pairStats.set(key, rec);
+    }
+    return rec;
+  };
+
+  const addPairHit = (nodeA, nodeB) => {
+    const rec = getPairStat(nodeA?.file, nodeB?.file);
+    if (!rec) return;
+
+    const kA = makeInterKey(nodeA || {});
+    const kB = makeInterKey(nodeB || {});
+    const lenA = segLen(nodeA);
+    const lenB = segLen(nodeB);
+
+    const pushA = (k, len) => {
+      if (!rec.keysA.has(k)) {
+        rec.keysA.add(k);
+        rec.sharedLenA += len || 0;
+      }
+    };
+    const pushB = (k, len) => {
+      if (!rec.keysB.has(k)) {
+        rec.keysB.add(k);
+        rec.sharedLenB += len || 0;
+      }
     };
 
-    // 2) 전 문서 문장 수집
-    const all = [];
-    for (const { name, text } of arr) all.push(...split(name, text));
-
-    // 3) 정확 중복: 정규화 키로 그룹
-    const canonMap = new Map();
-    for (const s of all) {
-      const key = canonKR(s.original || s.text || "");
-      if (!key) continue;
-      const v = canonMap.get(key) || [];
-      v.push({ file: s.file, line: s.line, start: s.start, original: s.original });
-      canonMap.set(key, v);
-    }
-    const exact_groups = Array.from(canonMap.values())
-      .filter((occ) => {
-        // 서로 다른 파일에서 최소 2회 이상
-        const files = new Set(occ.map(o => o.file));
-        return files.size >= 2;
-      })
-      .map((occ, idx) => ({ id: idx + 1, occurrences: occ }));
-
-    // 4) 유사 페어: 서로 다른 파일끼리만, Jaccard n-gram(3)
-    const pairs = [];
-    for (let i = 0; i < all.length; i++) {
-      for (let j = i + 1; j < all.length; j++) {
-        const A = all[i], B = all[j];
-        if (A.file === B.file) continue;
-        const a = A.original || A.text || "";
-        const b = B.original || B.text || "";
-        // 정확중복은 유사에서 제외
-        if (canonKR(a) === canonKR(b)) continue;
-        const score = jaccardByNgram(a, b, 3);
-        if (score >= TH) {
-          pairs.push({
-            a: { file: A.file, line: A.line, start: A.start, original: A.original },
-            b: { file: B.file, line: B.line, start: B.start, original: B.original },
-            score: Number(score.toFixed(3)),
-          });
-        }
-      }
-    }
-
-    // 5) 상태 반영 (UI 동일 구조)
-    setInterExactGroups(exact_groups);
-    setInterSimilarPairs(pairs);
-
-    // 유사 페어 클러스터링(완전동일 제외)
-    const simPairsNoExact = (pairs || []).filter((p) => {
-      const s = Number(p?.score ?? 0);
-      const a = p?.a?.original ?? p?.a?.text ?? "";
-      const b = p?.b?.original ?? p?.b?.text ?? "";
-      if (s >= 0.9995) return false;
-      if (canonKR(a) === canonKR(b)) return false;
-      return true;
-    });
-
-    const mergeTh = Number(interSimTh) || 0.70;
-    const repMergeTh = Math.max((Number(interSimTh) || 0.70) - 0.05, 0.65);
-    const groups = clusterSimilarPairs(simPairsNoExact, mergeTh, repMergeTh);
-    setInterSimilarGroups(groups);
-
-    if (!exact_groups.length && !simPairsNoExact.length) {
-      alert("교차 중복문장·유사 문장이 발견되지 않았습니다.");
-    } else {
-      alert("여러 문서 간 탐지를 완료했습니다.");
+    if ((nodeA?.file || "") === rec.fileA && (nodeB?.file || "") === rec.fileB) {
+      pushA(kA, lenA);
+      pushB(kB, lenB);
+    } else if (
+      (nodeA?.file || "") === rec.fileB &&
+      (nodeB?.file || "") === rec.fileA
+    ) {
+      // A/B가 뒤집혀서 들어온 경우
+      pushA(kB, lenB);
+      pushB(kA, lenA);
     }
   };
+
+  // 5-1-1) 정확 중복 그룹에서 문서쌍 추출
+  (exact_groups || []).forEach((g) => {
+    const occ = g?.occurrences || [];
+    for (let i = 0; i < occ.length; i++) {
+      for (let j = i + 1; j < occ.length; j++) {
+        const a = occ[i];
+        const b = occ[j];
+        if (!a || !b) continue;
+        if ((a.file || "") === (b.file || "")) continue;
+        addPairHit(a, b);
+      }
+    }
+  });
+
+  // 5-1-2) 유사 페어에서 문서쌍 추출
+  (simPairsNoExact || []).forEach((p) => {
+    const a = p?.a;
+    const b = p?.b;
+    if (!a || !b) return;
+    if ((a.file || "") === (b.file || "")) return;
+    addPairHit(a, b);
+  });
+
+  // 🔹 5-2) 문서별 "상대 문서 유사율" 리스트로 변환 (문서 전체 char n-gram 기준)
+  //   - 문장 탐지 결과(exact/similar)는 하이라이트용으로만 사용하고,
+  //     요약 유사율은 각 문서 전체 텍스트의 겹치는 구간 비율로 다시 계산한다.
+  const makeNormForDup = (s) =>
+    (s || "")
+      .toString()
+      .replace(/\s+/g, "")
+      .replace(/[^\p{L}\p{N}]/gu, "");
+
+  const makeShingles = (s, n = 6, step = 2) => {
+    const t = makeNormForDup(s);
+    if (!t || t.length < n) return new Set();
+    const out = new Set();
+    for (let i = 0; i <= t.length - n; i += step) {
+      out.add(t.slice(i, i + n));
+    }
+    return out;
+  };
+
+  // 원문 텍스트만 뽑기
+  const docTexts = (arr || []).map(({ name, text }) => ({
+    name,
+    text: text || "",
+  }));
+
+  // 각 문서별 shingle 집합 캐시
+  const shingleMap = new Map();
+  docTexts.forEach(({ name, text }) => {
+    if (!name) return;
+    shingleMap.set(name, makeShingles(text, 6, 2));
+  });
+
+  // 🔹 문서쌍 요약 리스트
+  const docPairSummary = [];
+
+  for (let i = 0; i < docTexts.length; i++) {
+    const aName = docTexts[i].name;
+    if (!aName) continue;
+    const aSet = shingleMap.get(aName) || new Set();
+    const lenA = aSet.size || 1;
+
+    for (let j = i + 1; j < docTexts.length; j++) {
+      const bName = docTexts[j].name;
+      if (!bName) continue;
+      const bSet = shingleMap.get(bName) || new Set();
+      const lenB = bSet.size || 1;
+
+      // 교집합 크기 계산
+      let inter = 0;
+      if (aSet.size <= bSet.size) {
+        for (const v of aSet) {
+          if (bSet.has(v)) inter++;
+        }
+      } else {
+        for (const v of bSet) {
+          if (aSet.has(v)) inter++;
+        }
+      }
+      if (!inter) continue;
+
+      const ratioA = (inter * 100) / lenA;
+      const ratioB = (inter * 100) / lenB;
+      const ratio = Number(Math.max(ratioA, ratioB).toFixed(1));
+
+      // A 화면에서 볼 때: A ↔ B
+      docPairSummary.push({
+        file: aName,
+        otherFile: bName,
+        ratio,
+        sharedCount: inter,
+        countA: lenA,
+        countB: lenB,
+      });
+
+      // B 화면에서 볼 때: B ↔ A
+      docPairSummary.push({
+        file: bName,
+        otherFile: aName,
+        ratio,
+        sharedCount: inter,
+        countA: lenB,
+        countB: lenA,
+      });
+    }
+  }
+
+  // 전역 상태에 저장 → UI 상단 "현재 문서 기준 유사 문서 상위 10개"에서 사용
+  setInterDocSummary(docPairSummary);
+
+  if (!exact_groups.length && !simPairsNoExact.length) {
+    alert("교차 중복문장·유사 문장이 발견되지 않았습니다.");
+  } else {
+    alert("여러 문서 간 탐지를 완료했습니다.");
+  }
+};
 
   try {
     if (!files.length) {
@@ -3721,7 +4147,8 @@ const handleInterDedup = async () => {
     const res = await axios.post(`${API_BASE}/dedup_inter`, {
       files: arr,
       min_len: Number(interMinLen) || 6,
-      sim_threshold: Number(interSimTh) || 0.88,
+      sim_threshold: Number(interSimTh) || 0.70,
+      mode: "full", // 🔹 에디터 UI에서는 항상 상세 모드 사용
     });
     const payload = res.data || {};
 
@@ -3763,8 +4190,166 @@ const handleInterDedup = async () => {
     const groups = clusterSimilarPairs(simPairsNoExact, mergeTh, repMergeTh);
     setInterSimilarGroups(groups);
 
+    // 🔹 5-1) 문서쌍별 유사도 집계 (겹치는 글자수 기준, A↔B 대칭)
+    const pairStats = new Map(); // key = "fileA||fileB" (사전순)
+
+    const segLen = (node) => {
+      if (!node) return 0;
+      const raw = (node.original ?? node.text ?? "")
+        .toString()
+        .replace(/\s+/g, "");
+      const s = Number(node.start ?? node.startIndex ?? 0);
+      const e = Number(node.end ?? node.endIndex ?? 0);
+      const byPos = e > s ? e - s : 0;
+      const len = byPos || raw.length;
+      return len > 0 ? len : 0;
+    };
+
+    const makeInterKey = (obj) =>
+      `${obj.file || ""}::${obj.line || 0}::${obj.start || 0}`;
+
+    const getPairStat = (fa, fb) => {
+      const A = String(fa || "");
+      const B = String(fb || "");
+      if (!A || !B || A === B) return null;
+      const [f1, f2] = A <= B ? [A, B] : [B, A];
+      const key = `${f1}||${f2}`;
+      let rec = pairStats.get(key);
+      if (!rec) {
+        rec = {
+          fileA: f1,
+          fileB: f2,
+          keysA: new Set(),
+          keysB: new Set(),
+          sharedLenA: 0,
+          sharedLenB: 0,
+        };
+        pairStats.set(key, rec);
+      }
+      return rec;
+    };
+
+    const addPairHit = (nodeA, nodeB) => {
+      const rec = getPairStat(nodeA?.file, nodeB?.file);
+      if (!rec) return;
+
+      const kA = makeInterKey(nodeA || {});
+      const kB = makeInterKey(nodeB || {});
+      const lenA = segLen(nodeA);
+      const lenB = segLen(nodeB);
+
+      const pushA = (k, len) => {
+        if (!rec.keysA.has(k)) {
+          rec.keysA.add(k);
+          rec.sharedLenA += len || 0;
+        }
+      };
+      const pushB = (k, len) => {
+        if (!rec.keysB.has(k)) {
+          rec.keysB.add(k);
+          rec.sharedLenB += len || 0;
+        }
+      };
+
+      if (
+        (nodeA?.file || "") === rec.fileA &&
+        (nodeB?.file || "") === rec.fileB
+      ) {
+        pushA(kA, lenA);
+        pushB(kB, lenB);
+      } else if (
+        (nodeA?.file || "") === rec.fileB &&
+        (nodeB?.file || "") === rec.fileA
+      ) {
+        pushA(kB, lenB);
+        pushB(kA, lenA);
+      }
+    };
+
+    // 5-1-1) 정확 중복 그룹에서 문서쌍 추출
+    (withLinesExact || []).forEach((g) => {
+      const occ = g?.occurrences || [];
+      for (let i = 0; i < occ.length; i++) {
+        for (let j = i + 1; j < occ.length; j++) {
+          const a = occ[i];
+          const b = occ[j];
+          if (!a || !b) continue;
+          if ((a.file || "") === (b.file || "")) continue;
+          addPairHit(a, b);
+        }
+      }
+    });
+
+    // 5-1-2) 유사 페어에서 문서쌍 추출
+    (simPairsNoExact || []).forEach((p) => {
+      const a = p?.a;
+      const b = p?.b;
+      if (!a || !b) return;
+      if ((a.file || "") === (b.file || "")) return;
+      addPairHit(a, b);
+    });
+
+    // 🔹 5-2) 문서별 "상대 문서 유사율" 리스트로 변환 (겹치는 글자수 / 전체 글자수)
+    const docPairSummary = [];
+
+    const docLenMap = {};
+    (arr || []).forEach(({ name, text }) => {
+      if (!name) return;
+      docLenMap[name] = String(text || "").replace(/\s+/g, "").length;
+    });
+    const getDocLen = (file) => docLenMap[file] || 0;
+
+    for (const rec of pairStats.values()) {
+      const cntA = rec.keysA.size || 0;
+      const cntB = rec.keysB.size || 0;
+      const sharedKeys = Math.min(cntA, cntB);
+      if (!sharedKeys) continue;
+
+      const totalA = getDocLen(rec.fileA);
+      const totalB = getDocLen(rec.fileB);
+      const dupA = rec.sharedLenA || 0;
+      const dupB = rec.sharedLenB || 0;
+
+      const ratioA = totalA > 0 ? (dupA * 100) / totalA : 0;
+      const ratioB = totalB > 0 ? (dupB * 100) / totalB : 0;
+
+      let ratio;
+      if (ratioA > 0 || ratioB > 0) {
+        ratio = Math.max(ratioA, ratioB);
+      } else {
+        const base = Math.max(cntA, cntB) || 1;
+        ratio = (sharedKeys * 100) / base;
+      }
+
+      const ratioRounded = Number(ratio.toFixed(1));
+
+      // A 화면에서 볼 때: A ↔ B
+      docPairSummary.push({
+        file: rec.fileA,
+        otherFile: rec.fileB,
+        ratio: ratioRounded,
+        sharedCount: sharedKeys,
+        countA: cntA,
+        countB: cntB,
+      });
+
+      // B 화면에서 볼 때: B ↔ A
+      docPairSummary.push({
+        file: rec.fileB,
+        otherFile: rec.fileA,
+        ratio: ratioRounded,
+        sharedCount: sharedKeys,
+        countA: cntB,
+        countB: cntA,
+      });
+    }
+
+    setInterDocSummary(docPairSummary);
+
     if (!withLinesExact.length && !simPairsNoExact.length) {
       alert("교차 중복문장·유사 문장이 발견되지 않았습니다.");
+    } else {
+      alert("여러 문서 간 중복·유사 탐지가 완료되었습니다.");
     }
   } catch (e) {
     // 서버 실패(401 등) → 로컬 계산 폴백
@@ -3933,6 +4518,304 @@ const saveInterDedupReportPDF = async () => {
       return;
     }
 
+    // ✅ 1) interDocSummary가 있으면, "요약 보고서" 전용 경량 PDF로 우선 생성
+    const summaryArr = Array.isArray(interDocSummary) ? interDocSummary : [];
+    if (summaryArr.length > 0) {
+      // 1-1) 파일별로 요약 묶기
+      const byFile = new Map();
+      summaryArr.forEach((row) => {
+        const key = row.file || "";
+        if (!key) return;
+        const arr = byFile.get(key) || [];
+        arr.push(row);
+        byFile.set(key, arr);
+      });
+
+      // 1-2) 파일 리스트 (업로드 순서 기준) – 실제 summary에 존재하는 것만 사용
+      const rawFileNames = Array.isArray(files)
+        ? files.map((f) => f?.name).filter(Boolean)
+        : Array.from(new Set(summaryArr.map((r) => r.file).filter(Boolean)));
+
+      const fileNames = rawFileNames.filter((name) => byFile.has(name));
+      if (!fileNames.length) {
+        alert("요약 데이터는 있으나 파일명이 없습니다.");
+        return;
+      }
+
+      // 1-3) PDF 한 개당 최대 섹션 수
+      const MAX_PER_PDF = 50;
+      const totalFiles = fileNames.length;
+      const totalParts = Math.max(1, Math.ceil(totalFiles / MAX_PER_PDF));
+
+      // 1-4) 섹션 번호 전역 카운터 (1. 2. 3. …)
+      let globalIndex = 1;
+
+      const esc = (s = "") =>
+        String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+
+      // 1-5) 50개씩 잘라 여러 개 PDF 생성
+      for (let part = 0; part < totalParts; part++) {
+        const startIdx = part * MAX_PER_PDF;
+        const endIdx = Math.min(startIdx + MAX_PER_PDF, totalFiles);
+        const chunkNames = fileNames.slice(startIdx, endIdx);
+
+        // 숨김용 루트 DOM
+        const holder = document.createElement("div");
+        holder.style.position = "fixed";
+        holder.style.left = "-9999px";
+        holder.style.top = "0";
+        holder.style.width = "0";
+        holder.style.height = "0";
+        document.body.appendChild(holder);
+
+        const root = document.createElement("div");
+        root.style.width = "190mm";
+        root.style.maxWidth = "190mm";
+        root.style.margin = "0 auto";
+        root.style.fontFamily =
+          "-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif";
+        root.style.fontSize = "11pt";
+        root.style.lineHeight = "1.6";
+        root.style.color = "#111827";
+
+        // 표지
+        const title = document.createElement("h1");
+        title.textContent = "여러 문서 간 중복문장·유사 탐지 — 요약 보고서";
+        title.style.fontSize = "18pt";
+        title.style.margin = "0 0 8mm";
+        root.appendChild(title);
+
+        // 총 검사 원고 수 표시 (전체 기준)
+        const totalInfo = document.createElement("div");
+        totalInfo.style.fontSize = "9pt";
+        totalInfo.style.margin = "2mm 0 3mm 0";
+        totalInfo.style.color = "#374151";
+        totalInfo.textContent = `총 검사 원고 수 : ${totalFiles}건`;
+        root.appendChild(totalInfo);
+
+        const sub = document.createElement("div");
+        const today = new Date().toLocaleDateString("ko-KR");
+        sub.textContent = `검사일: ${today} · 총 문서 수: ${totalFiles} · PDF 묶음: ${
+          part + 1
+        } / ${totalParts} (이 파일에는 ${startIdx + 1}~${endIdx}번 원고 포함)`;
+        sub.style.margin = "0 0 6mm";
+        sub.style.color = "#4b5563";
+        sub.style.fontSize = "10pt";
+        root.appendChild(sub);
+
+        // ───────── 주의사항 블록 ─────────
+        const note = document.createElement("div");
+        note.style.fontSize = "9pt";
+        note.style.lineHeight = "1.5";
+        note.style.margin = "0 0 8mm 0";
+        note.style.color = "#374151";
+
+        note.innerHTML = `
+          <div style="font-weight:600; color:#111827;">※ 유사도 결과 해석 안내</div>
+
+          <div>
+            본 유사도 값은
+            <strong style="color:#111827;">내부 중복·재활용 위험도 참고 지표</strong>입니다.
+          </div>
+
+          <div style="margin-top:2mm;">
+            <span style="color:#6b7280;">구간 해석 :</span><br>
+            <span style="color:#2563eb; font-weight:600;">0~10%</span> 자연스러운 유사 /
+            <span style="color:#ca8a04; font-weight:600;">11~20%</span> 주의·부분 수정(관리 구간) /
+            <span style="color:#ea580c; font-weight:600;">21~30%</span> 재작성·집중 점검 /
+            <span style="color:#dc2626; font-weight:700;">31% 이상 재활용 의심</span>
+          </div>
+
+          <div style="margin-top:2mm;">
+            <span style="color:#6b7280;">표기 규칙 :</span><br>
+            <strong style="color:#111827;">‘그 외 유사율 5% 미만 문서’</strong> 건수는
+            <strong style="color:#111827;">유사율 1.0% 이상 ~ 4.9%</strong> 구간만 집계되며,<br>
+            <span style="color:#dc2626; font-weight:700;">
+              유사율 1% 미만(0% 포함) 문서는 별도로 표시되지 않습니다.
+            </span>
+          </div>
+        `;
+        root.appendChild(note);
+
+        // 11~20% 관리 구간 안내
+        const note2 = document.createElement("div");
+        note2.style.fontSize = "9pt";
+        note2.style.lineHeight = "1.5";
+        note2.style.margin = "0 0 10mm 0";
+        note2.style.color = "#374151";
+
+        note2.innerHTML = `
+          <div style="font-weight:600; color:#111827;">※ 11~20% 구간 해석 안내(20%이하 실무 기준)</div>
+
+          <div>
+            11~20% 구간은
+            <strong style="color:#111827;">동일 키워드·업종 특성으로 인해 자연스럽게 발생하는 유사 패턴</strong>이
+            일부 포함될 수 있습니다.
+          </div>
+
+          <div style="margin-top:2mm;">
+            이 구간은 <strong style="color:#111827;">중복 의심 구간이 아니라, 추가 검토가 필요한 관리 구간</strong>으로 해석합니다.<br>
+            동일 키워드 반복 위주의 유사도는 실사용에 큰 문제가 없으며,<br>
+            <span style="color:#111827; font-weight:600;">
+              문장 구조가 동일한 구간만 선택적으로 수정할 것을 권장합니다.
+            </span>
+          </div>
+        `;
+        root.appendChild(note2);
+
+        // 1-6) 파일별 섹션 (현재 묶음에 해당하는 이름만)
+        chunkNames.forEach((fname) => {
+          // 1) 해당 기준 문서에 대한 전체 유사도 행 정렬 (자르지 않음)
+          const allRows = (byFile.get(fname) || [])
+            .slice()
+            .sort(
+              (a, b) =>
+                (b.ratio || 0) - (a.ratio || 0) ||
+                String(a.otherFile || "").localeCompare(
+                  String(b.otherFile || "")
+                )
+            );
+
+          if (!allRows.length) return;
+
+          const sec = document.createElement("div");
+          sec.style.margin = "0 0 8mm";
+          sec.className = "summary-section";
+
+          const h2 = document.createElement("h2");
+          const myIndex = globalIndex++;
+          h2.textContent = `${myIndex}. ${fname}`;
+          h2.style.fontSize = "13pt";
+          h2.style.margin = "0 0 3mm";
+          sec.appendChild(h2);
+
+          const table = document.createElement("table");
+          table.style.width = "100%";
+          table.style.borderCollapse = "collapse";
+          table.style.marginBottom = "2mm";
+          table.style.fontSize = "9pt";
+
+          const thead = document.createElement("thead");
+          const trHead = document.createElement("tr");
+
+          const th1 = document.createElement("th");
+          th1.textContent = "유사 문서";
+          th1.style.textAlign = "left";
+          th1.style.padding = "3px 2px";
+          th1.style.borderBottom = "1px solid #d1d5db";
+
+          const th2 = document.createElement("th");
+          th2.textContent = "유사율(%)";
+          th2.style.textAlign = "right";
+          th2.style.padding = "3px 2px";
+          th2.style.borderBottom = "1px solid #d1d5db";
+
+          trHead.appendChild(th1);
+          trHead.appendChild(th2);
+          thead.appendChild(trHead);
+          table.appendChild(thead);
+
+          const tbody = document.createElement("tbody");
+
+          // 2) 5% 이상/미만 분리
+          const highRows = [];
+          let lowCount = 0;
+
+          allRows.forEach((r) => {
+            const num =
+              typeof r.ratio === "number" ? Number(r.ratio) : null;
+
+            if (num !== null && num < 5) {
+              // 5% 미만은 개수만 집계 (전체 기준)
+              lowCount += 1;
+            } else {
+              highRows.push(r);
+            }
+          });
+
+          // 3) 5% 이상 문서만 "상위 10개"까지 개별 표기
+          const visibleRows = highRows.slice(0, 10);
+
+          // 5% 이상 개별 행
+          visibleRows.forEach((r) => {
+            const tr = document.createElement("tr");
+
+            const tdName = document.createElement("td");
+            tdName.innerHTML = esc(r.otherFile || "");
+            tdName.style.padding = "3px 2px";
+            tdName.style.borderBottom = "1px solid #f3f4f6";
+            tdName.style.textAlign = "left";
+
+            const tdRatio = document.createElement("td");
+            tdRatio.textContent =
+              typeof r.ratio === "number" ? r.ratio.toFixed(1) : "-";
+            tdRatio.style.padding = "3px 2px";
+            tdRatio.style.borderBottom = "1px solid #f3f4f6";
+            tdRatio.style.textAlign = "right";
+
+            tr.appendChild(tdName);
+            tr.appendChild(tdRatio);
+            tbody.appendChild(tr);
+          });
+
+          // 4) 5% 미만 묶음 행 (전체 기준)
+          if (lowCount > 0) {
+            const tr = document.createElement("tr");
+
+            const tdName = document.createElement("td");
+            tdName.textContent = "그 외 유사율 5% 미만 문서";
+            tdName.style.padding = "3px 2px";
+            tdName.style.borderBottom = "1px solid #f3f4f6";
+            tdName.style.textAlign = "left";
+
+            const tdRatio = document.createElement("td");
+            tdRatio.textContent = `${lowCount}건`;
+            tdRatio.style.padding = "3px 2px";
+            tdRatio.style.borderBottom = "1px solid #f3f4f6";
+            tdRatio.style.textAlign = "right";
+
+            tr.appendChild(tdName);
+            tr.appendChild(tdRatio);
+            tbody.appendChild(tr);
+          }
+
+          table.appendChild(tbody);
+          sec.appendChild(table);
+
+          root.appendChild(sec);
+        });
+
+        // A4(210mm) 안에서 페이지 폭을 190mm로 고정해서 잘리지 않게 처리
+        root.style.boxSizing = "border-box";
+        root.style.padding = "10mm 10mm 12mm 10mm";
+        root.style.backgroundColor = "#ffffff";
+
+        holder.appendChild(root);
+
+        const filename =
+          totalParts === 1
+            ? "여러문서_유사도_요약보고서.pdf"
+            : `여러문서_유사도_요약보고서_${part + 1}of${totalParts}.pdf`;
+
+        const opt = {
+          margin: [0, 0, 0, 0],
+          filename,
+          image: { type: "jpeg", quality: 0.98 },
+          html2canvas: { scale: 1 },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        };
+
+        await window.html2pdf().set(opt).from(root).save();
+        document.body.removeChild(holder);
+      }
+
+      return; // ✅ 요약 보고서 여러 개 생성 후, 아래의 구버전 그룹 보고서는 타지 않음
+    }
+
+    // ✅ 2) interDocSummary가 없을 때만 — 기존 "그룹 보고서" 로직 실행
     const fileMap = await getFileTextMapWithLines();
     const now = new Date();
     const ymd = now.toLocaleDateString("ko-KR"); // 날짜만 (시간 X)
@@ -4467,7 +5350,7 @@ if (!token && !guestMode) {
   }}
 >
   <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#111827" }}>
-    💳 계정당 <span style={{ color: "#dc2626" }}>33,000원/월</span>
+    💳 계정당 <span style={{ color: "#dc2626" }}>문의/월</span>
     <span style={{ fontWeight: 500, color: "#6b7280" }}>
       {" "} (계정 공유·대여 시 이용 제한)
     </span>
@@ -4482,7 +5365,7 @@ if (!token && !guestMode) {
   </p>
 
   <p style={{ marginTop: 8, fontSize: 14, color: "#111827", fontWeight: 600 }}>
-    🏦 입금: 농협 352-1639-3012-83 (늘솜제작소 / 남기태)
+    🏦 입금: 늘솜제작소
   </p>
 
   <p style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: "#0f766e" }}>
@@ -5247,7 +6130,7 @@ return (
                   if (s <= 7) {
                     label = "AI 의심(예비필터)";
                     msg =
-                      "이 글은 로컬 기준에서 AI 작성 가능성이 높습니다. 중요한 글이라면 GPTZero·카피킬러 등 외부 탐지를 한 번 더 권장합니다.";
+                      "이 글은 로컬 기준에서 AI 작성 가능성이 높습니다. 중요한 글이라면 외부 탐지를 한 번 더 권장합니다.";
                   } else if (s <= 14) {
                     label = "경계 구간(혼합/의심)";
                     msg =
@@ -5879,75 +6762,159 @@ onClick={() => {
 
   {/* 저장 버튼들 */}
   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+    {/* 요약 보고서: 파일 간 유사율 표만 간단히 정리 */}
     <button
       onClick={saveInterDedupReportPDF}
       disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
-      title="여러 문서 간 그룹(정확/유사) 보고서"
+      title="여러 문서 간 유사율을 파일별로 정리한 요약 보고서"
     >
-      그룹 보고서(PDF)
+      요약 보고서(PDF)
     </button>
 
+    {/* 상세 보고서: 각 파일별 중복·유사 문장과 내용을 전부 포함 */}
     <button
       onClick={savePerDocDedupReportPDF}
       disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
-      title="업로드한 모든 원고를 문서별 섹션으로 한 파일에"
+      title="각 원고별 중복·유사 문장과 내용을 상세히 정리한 보고서"
     >
-      문서별 통합(PDF)
+      상세 보고서(PDF)
     </button>
 
+    {/* 둘 다 저장: 요약 + 상세를 순서대로 저장 */}
     <button
       onClick={handleDedupPDFBoth}
       disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
-      title="그룹 보고서 + 문서별 통합 보고서를 순서대로 저장"
+      title="요약 보고서 + 상세 보고서를 순서대로 저장"
     >
       둘 다 저장
     </button>
   </div>
 
-  {/* 결과 영역 */}
-  <div
-    style={{
-      maxHeight: 200,
-      overflowY: "auto",
-      marginTop: 6,
-      background: "#fff",
-      border: "1px solid #ddd",
-      borderRadius: 6,
-      padding: 8,
-    }}
-  >
-    {!interExactGroups.length && !interSimilarGroups.length && (
-      <div style={{ color: "#666" }}>결과 없음</div>
-    )}
+{/* 결과 영역 */}
+<div
+  style={{
+    maxHeight: 200,
+    overflowY: "auto",
+    marginTop: 6,
+    background: "#fff",
+    border: "1px solid #ddd",
+    borderRadius: 6,
+    padding: 8,
+  }}
+>
+  {!interExactGroups.length && !interSimilarGroups.length && !interDocSummary.length && (
+    <div style={{ color: "#666" }}>결과 없음</div>
+  )}
 
-    {/* ==== 파일 간 유사 그룹(클러스터) ==== */}
-    {!interSimilarGroups.length ? (
-      <div style={{ fontSize: 13, color: "#666" }}>결과 없음</div>
-    ) : (
-      interSimilarGroups.map((g, gi) => (
-        <div
-          key={gi}
-          style={{
-            border: "1px solid #e5e7eb",
-            borderRadius: 8,
-            padding: "8px 10px",
-            margin: "8px 0",
-          }}
-        >
-          <div style={{ fontSize: 12, color: "#444", marginBottom: 6 }}>
-            유사 그룹 {gi + 1} · 문장 수 {g.size} · 평균유사도 {g.avgScore} (최대 {g.maxScore})
-          </div>
+{/* ==== 현재 파일 기준 문서쌍 유사도 요약 (상위 10건) ==== */}
+{!!interDocSummary?.length &&
+  files &&
+  files.length > 0 &&
+  fileIndex >= 0 &&
+  fileIndex < files.length &&
+  (() => {
+    // 다음/이전 이동 후에도 항상 안전한 인덱스를 사용
+    const safeIndex = Math.min(
+      Math.max(fileIndex, 0),
+      files.length - 1
+    );
+    const curName = files[safeIndex]?.name || "";
 
-          {/* 대표문장 대신, 그룹에 포함된 실제 원문 문장들을 그대로 표시 */}
-          {(g.occurrences || []).map((o, oi) => (
-            <div key={oi} style={{ fontSize: 12, margin: "4px 0" }}>
-              • {o.file} #{o.line} — {o.original || o.text || ""}
-            </div>
-          ))}
+    if (!curName) return null;
+
+    // 현재 문서가 file 이든 otherFile 이든 모두 잡아서,
+    // 항상 "file = 현재문서, otherFile = 상대문서" 형태로 정규화
+    const rows = (interDocSummary || [])
+      .filter(
+        (row) => row.file === curName || row.otherFile === curName
+      )
+      .map((row) =>
+        row.file === curName
+          ? row
+          : {
+              ...row,
+              file: curName,
+              otherFile: row.file,
+            }
+      )
+      .sort(
+        (a, b) =>
+          (b.ratio || 0) - (a.ratio || 0) ||
+          (b.sharedCount || 0) - (a.sharedCount || 0) ||
+          String(a.otherFile || "").localeCompare(
+            String(b.otherFile || "")
+          )
+      );
+
+    // 같은 상대 문서가 여러 번 들어오면(대칭 등) 한 번만 남김
+    const dedup = [];
+    const seen = new Set();
+    for (const r of rows) {
+      const key = r.otherFile || "";
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      dedup.push(r);
+    }
+
+    const top10 = dedup.slice(0, 10);
+    if (!top10.length) return null;
+
+    return (
+      <div style={{ fontSize: 12, marginBottom: 8, color: "#111" }}>
+        <div style={{ marginBottom: 4 }}>
+          현재 문서 기준 유사 문서 상위 10개
         </div>
-      ))
-    )}
+        <div
+          style={{ fontSize: 11, color: "#4b5563", marginBottom: 2 }}
+        >
+          기준 문서: <strong>{curName}</strong>
+        </div>
+        {top10.map((d, idx) => {
+          let rangeText = "-";
+
+          if (typeof d.ratio === "number") {
+            // 중앙값 기준 ±1~2% 정도 구간으로 표기
+            const center = d.ratio;
+            const base = Math.round(center);
+            const min = Math.max(0, base - 2);
+            const max = Math.min(100, base + 2);
+            rangeText = `${min}~${max}%`;
+          }
+
+          return (
+            <div key={d.otherFile || idx} style={{ margin: "2px 0" }}>
+              • {idx + 1}. {d.otherFile} — 유사율 {rangeText}
+            </div>
+          );
+        })}
+    <div
+      style={{
+        fontSize: 11,
+        color: "#6b7280",
+        marginTop: 4,
+      }}
+    >
+      상세 유사 문장 목록과 문장 묶음은 오른쪽 그룹 보고서(PDF)에서
+      확인하실 수 있습니다.
+      <br />
+      ※ 유사율은 내부 중복·재활용 위험도를 가늠하는 참고값입니다.{" "}
+      0~10%: 자연스러운 유사 수준 /{" "}
+      11~20%: 주의·수정 권장 /{" "}
+      21~30%: 재작성·집중 점검 권장 /{" "}
+      31% 이상: 재활용 원고 의심(사용 자제 권장).
+    </div>
+      </div>
+    );
+  })()}
+
+  {/* ==== 파일 간 유사 그룹(클러스터) ==== */}
+  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+    상세 유사 문장 그룹과 문장 목록은{" "}
+    <b>그룹 보고서(PDF)</b>에서만 확인하도록 변경했습니다.
+    <br />
+    화면에서는 각 파일별 상위 10개 유사 문서의 유사율만 제공합니다.
   </div>
+</div>
 </div>
 </div>
 </div>

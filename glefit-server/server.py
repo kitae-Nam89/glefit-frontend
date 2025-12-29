@@ -1564,6 +1564,57 @@ def _norm_for_dup(s: str) -> str:
     s = _ws_rx.sub(" ", s).strip()
     return s
 
+def _norm_for_dup_strong(s: str) -> str:
+    """
+    다문서 유사도 전용 강한 정규화:
+    - NFKC 정규화 + 소문자
+    - 구두점/공백 제거
+    - 조사/어미 같은 껍데기를 최대한 얇게 만들어서 '내용'에 더 민감하게
+    """
+    s = unicodedata.normalize("NFKC", s or "")
+    s = s.lower()
+    s = _punc_rx.sub(" ", s)
+    s = _ws_rx.sub(" ", s).strip()
+    if not s:
+        return ""
+
+    tokens = s.split()
+    # 자주 쓰는 조사/접속사 토큰
+    DROP_TOKENS = {
+        "은", "는", "이", "가", "을", "를", "도", "만",
+        "에", "에서", "에게", "으로", "로", "와", "과",
+        "및", "또는", "그리고", "하지만", "그러나"
+    }
+
+    cleaned = []
+    for tok in tokens:
+        if tok in DROP_TOKENS:
+            continue
+        # 한 글자짜리 조사/어미 잘라내기 (대략적인 처리)
+        if len(tok) > 1 and tok[-1] in "은는이가을를도만로과와에":
+            cleaned.append(tok[:-1])
+        else:
+            cleaned.append(tok)
+
+    return " ".join(t for t in cleaned if t)
+
+
+def _word_ngrams_for_dup(s: str, n: int = 2, step: int = 1) -> set:
+    """
+    단어 단위 n-gram 집합.
+    - 리라이팅(단어 조금 바꾸기/순서 살짝 변경)에 더 강하게 반응하도록 사용.
+    """
+    s = _norm_for_dup_strong(s or "")
+    if not s:
+        return set()
+    words = s.split()
+    if len(words) < n:
+        return set()
+    out = set()
+    for i in range(0, len(words) - n + 1, max(1, int(step))):
+        out.add(" ".join(words[i:i + n]))
+    return out
+
 
 def _char_ngrams(s: str, n: int = 3) -> set[str]:
     """단일 길이 n 에 대한 문자 n-gram 집합"""
@@ -1612,6 +1663,159 @@ def _sentence_spans(text: str):
             spans.append((idx, idx + len(s), s))
             cursor = idx + len(s)
     return spans
+
+def _dedup_inter_lite(files,
+                     ui_min_percent: float = 0.10,
+                     ui_top_k: int = 10,
+                     shingle_n: int = 3,
+                     shingle_step: int = 2,
+                     detail_top_k: int = 3):
+    """
+    UI/보고서용 요약 (개선판):
+    - 문서(파일) 단위 유사도(%)를
+        * 문자 n-gram 기반 점수
+        * 단어 n-gram 기반 점수
+      두 가지로 계산해서 혼합한다.
+    - UI는 상위 ui_top_k만 반환
+    - 상세는 상위쌍에 대해서만 문장샘플 몇 개 반환
+    """
+    # ===== 1) 준비: 문서 목록 + 시그니처(문자/단어) 만들기 =====
+    docs = []
+    sigs_char = []
+    sigs_word = []
+
+    for i, f in enumerate(files or []):
+        name = (f.get("name") or f.get("filename") or f"file_{i+1}")
+        text = (f.get("text") or "")
+        docs.append({"index": i, "name": name, "text": text})
+        # 문자 n-gram (기존 방식)
+        sigs_char.append(_doc_shingles(text, n=shingle_n, step=shingle_step))
+        # 단어 n-gram (새로 추가)
+        sigs_word.append(_word_ngrams_for_dup(text, n=2, step=1))
+
+    n = len(docs)
+    if n <= 1:
+        return {
+            "files": [],
+            "bins": {},
+            "top_pairs": [],
+            "pair_details": [],
+        }
+
+    # ===== 2) 문서쌍별 점수 계산 =====
+    # per-file 최대 유사도(각 문서 기준), per-pair 상위
+    max_score = [0.0] * n
+    max_with = [None] * n
+    pairs = []  # (score, i, j)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            s_char_i = sigs_char[i] or set()
+            s_char_j = sigs_char[j] or set()
+            s_word_i = sigs_word[i] or set()
+            s_word_j = sigs_word[j] or set()
+
+            # 문자 n-gram 자카드
+            sc_char = _jaccard_set(s_char_i, s_char_j)
+            # 단어 n-gram 자카드
+            sc_word = _jaccard_set(s_word_i, s_word_j) if (s_word_i and s_word_j) else 0.0
+
+            # 혼합 점수: 0.5 * 문자 + 0.5 * 단어
+            sc = 0.5 * sc_char + 0.5 * sc_word
+
+            # per-file 최대값 갱신 (각 문서 기준)
+            if sc > max_score[i]:
+                max_score[i] = sc
+                max_with[i] = j
+            if sc > max_score[j]:
+                max_score[j] = sc
+                max_with[j] = i
+
+            if sc >= float(ui_min_percent):
+                pairs.append((sc, i, j))
+
+    pairs.sort(key=lambda x: x[0], reverse=True)
+
+    # ===== 3) UI 상단용 상위 N쌍 =====
+    top_pairs = []
+    top_limit = max(0, int(ui_top_k))
+    for sc, i, j in pairs[:top_limit]:
+        pct = int(round(sc * 100))
+        top_pairs.append({
+            "a": docs[i]["name"],
+            "b": docs[j]["name"],
+            "score": round(float(sc), 3),
+            "percent": pct,
+        })
+
+    # ===== 4) 상세용 상위쌍 문장 페어 =====
+    pair_details = []
+    if detail_top_k and top_pairs:
+        for p in top_pairs:
+            ai = next((d["index"] for d in docs if d["name"] == p["a"]), None)
+            bi = next((d["index"] for d in docs if d["name"] == p["b"]), None)
+            if ai is None or bi is None:
+                continue
+            details = _best_sentence_pairs(
+                docs[ai]["text"],
+                docs[bi]["text"],
+                top_k=detail_top_k,
+                n=3,
+            )
+            pair_details.append({
+                "a": p["a"],
+                "b": p["b"],
+                "percent": p["percent"],
+                "sentence_pairs": details,
+            })
+
+    # ===== 5) 파일별 요약 + 구간(bins) =====
+    file_rows = []
+    bins = {}  # "11~20": ["A (12%)", ...]
+
+    for i, d in enumerate(docs):
+        sc = max_score[i]
+        pct = int(round(sc * 100))
+        with_name = docs[max_with[i]]["name"] if max_with[i] is not None else None
+
+        file_rows.append({
+            "name": d["name"],
+            "max_score": round(float(sc), 3),
+            "max_percent": pct,
+            "max_with": with_name,
+        })
+
+        # 0~10%는 기본적으로 표에서 제외 (원하면 UI에서 별도 처리)
+        if pct <= 10:
+            continue
+        start = ((pct - 1) // 10) * 10 + 1  # 11~20, 21~30 ...
+        end = start + 9
+        key = f"{start}~{end}"
+        bins.setdefault(key, []).append(f"{d['name']} ({pct}%)")
+
+    # 구간 정렬: 높은 구간부터
+    def _bin_key(k: str):
+        try:
+            a = int(k.split("~")[0])
+            return -a
+        except Exception:
+            return 0
+
+    bins_sorted = {}
+    for k in sorted(bins.keys(), key=_bin_key):
+        bins_sorted[k] = bins[k]
+
+    return {
+        "files": file_rows,
+        "bins": bins_sorted,
+        "top_pairs": top_pairs,
+        "pair_details": pair_details,
+    }
+
+    # 가장 많이 겹치는 쌍부터 정렬
+    pairs.sort(key=lambda p: max(p["ratio_a"], p["ratio_b"]), reverse=True)
+
+    return {"ok": True, "pairs": pairs}
 
 # === [ADD] 필수가이드(유사도) 유틸 ===================================
 def _best_matches_for_template(text: str, template: str, threshold: float = 0.88):
@@ -1891,7 +2095,213 @@ def _dedup_inter(files, min_len=6, sim_threshold=0.85):
                 })
     return exact, sims
 
+# === [ADD] (Lite) 다문서 중복 요약/보고서용: 문서 단위 유사도 계산 =========
+def _doc_shingles(text: str, n: int = 3, step: int = 2):
+    """문서 단위 유사도(근사)를 위한 char n-gram 시그니처.
+    - step을 늘리면 속도↑/정밀도↓
+    """
+    if not text:
+        return set()
+    # 공백/구두점 영향 최소화
+    t = _norm_for_dup(text)
+    if len(t) < n:
+        return set()
+    out = set()
+    # 메모리/속도를 위해 해시(int)로 저장
+    for i in range(0, len(t) - n + 1, max(1, int(step))):
+        out.add(hash(t[i:i+n]))
+    return out
+
+
+def _jaccard_set(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a) + len(b) - inter
+    if union <= 0:
+        return 0.0
+    return inter / union
+
+
+def _best_sentence_pairs(text_a: str, text_b: str, top_k: int = 3, n: int = 3):
+    """두 문서 간 '가장 비슷한 문장 쌍' 몇 개만 뽑아 주는 경량 상세용."""
+    spans_a = _sentence_spans(text_a or "")
+    spans_b = _sentence_spans(text_b or "")
+    grams_a = []
+    for si, (s, e, raw) in enumerate(spans_a):
+        nrm = _norm_for_dup(raw)
+        if len(nrm) >= 6:
+            grams_a.append((si, s, e, raw, _char_ngrams(raw, n)))
+    grams_b = []
+    for sj, (s, e, raw) in enumerate(spans_b):
+        nrm = _norm_for_dup(raw)
+        if len(nrm) >= 6:
+            grams_b.append((sj, s, e, raw, _char_ngrams(raw, n)))
+
+    best = []
+    for (si, s1, e1, r1, g1) in grams_a:
+        for (sj, s2, e2, r2, g2) in grams_b:
+            sc = _jaccard(g1, g2)
+            if sc <= 0:
+                continue
+            best.append((sc, si, sj, s1, e1, r1, s2, e2, r2))
+
+    best.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for sc, si, sj, s1, e1, r1, s2, e2, r2 in best[: max(0, int(top_k))]:
+        out.append({
+            "score": round(float(sc), 3),
+            "a": {"sentIndex": si, "start": s1, "end": e1, "sentence": (r1 or "")[:200]},
+            "b": {"sentIndex": sj, "start": s2, "end": e2, "sentence": (r2 or "")[:200]},
+        })
+    return out
+
+
+def _dedup_inter_lite(files,
+                     ui_min_percent: float = 0.10,
+                     ui_top_k: int = 10,
+                     shingle_n: int = 3,
+                     shingle_step: int = 2,
+                     detail_top_k: int = 3):
+    """UI/보고서용 요약 (개선판):
+    - 문서(파일) 단위 유사도(%)를 '각 문서 기준 겹치는 비율'로 계산
+      * Jaccard(교집합/합집합)가 아니라
+        각 문서에 대해 |A∩B| / |A|, |A∩B| / |B| 기준으로 잡는다.
+    - UI는 상위 ui_top_k만 반환
+    - 상세는 상위쌍에 대해서만 문장샘플 몇 개 반환
+    """
+    # 준비
+    docs = []
+    sigs = []
+    for i, f in enumerate(files or []):
+        name = (f.get("name") or f.get("filename") or f"file_{i+1}")
+        text = (f.get("text") or "")
+        docs.append({"index": i, "name": name, "text": text})
+        sigs.append(_doc_shingles(text, n=shingle_n, step=shingle_step))
+
+    n = len(docs)
+    if n <= 1:
+        return {
+            "files": [],
+            "bins": {},
+            "top_pairs": [],
+            "pair_details": [],
+        }
+
+    # per-file 최대 유사도(각 문서 기준), per-pair 상위
+    max_score = [0.0] * n   # 각 문서 기준 최대 겹침 비율 (0~1)
+    max_with = [None] * n
+    pairs = []  # (score, i, j)  score = max(ratio_i, ratio_j)
+
+    # 쌍별 계산
+    for i in range(n):
+        si = sigs[i] or set()
+        len_i = float(len(si)) or 1.0
+        for j in range(i + 1, n):
+            sj = sigs[j] or set()
+            len_j = float(len(sj)) or 1.0
+
+            inter = si & sj
+            if not inter:
+                continue
+
+            inter_len = float(len(inter))
+            # 각 문서 기준 겹치는 비율
+            ratio_i = inter_len / len_i
+            ratio_j = inter_len / len_j
+            pair_score = max(ratio_i, ratio_j)
+
+            # per-file 최대값 갱신
+            if ratio_i > max_score[i]:
+                max_score[i] = ratio_i
+                max_with[i] = j
+            if ratio_j > max_score[j]:
+                max_score[j] = ratio_j
+                max_with[j] = i
+
+            if pair_score >= float(ui_min_percent):
+                pairs.append((pair_score, i, j))
+
+    pairs.sort(key=lambda x: x[0], reverse=True)
+
+    # UI: 상위 N개만
+    top_pairs = []
+    top_limit = max(0, int(ui_top_k))
+    for score, i, j in pairs[:top_limit]:
+        pct = int(round(score * 100))
+        top_pairs.append({
+            "a": docs[i]["name"],
+            "b": docs[j]["name"],
+            "score": round(float(score), 3),
+            "percent": pct,
+        })
+
+    # 상세(상위쌍만, 문장 3개)
+    pair_details = []
+    if detail_top_k and top_pairs:
+        for p in top_pairs:
+            ai = next((d["index"] for d in docs if d["name"] == p["a"]), None)
+            bi = next((d["index"] for d in docs if d["name"] == p["b"]), None)
+            if ai is None or bi is None:
+                continue
+            details = _best_sentence_pairs(
+                docs[ai]["text"],
+                docs[bi]["text"],
+                top_k=detail_top_k,
+                n=3,
+            )
+            pair_details.append({
+                "a": p["a"],
+                "b": p["b"],
+                "percent": p["percent"],
+                "sentence_pairs": details,
+            })
+
+    # 파일별 요약 + 구간(bins)
+    file_rows = []
+    bins = {}  # "11~20": ["A (12%)", ...]
+    for i, d in enumerate(docs):
+        sc = max_score[i]
+        pct = int(round(sc * 100))
+        with_name = docs[max_with[i]]["name"] if max_with[i] is not None else None
+
+        file_rows.append({
+            "name": d["name"],
+            "max_score": round(float(sc), 3),
+            "max_percent": pct,
+            "max_with": with_name,
+        })
+
+        # 0~10은 기본적으로 제외(원하면 UI에서 표시)
+        if pct <= 10:
+            continue
+        start = ((pct - 1) // 10) * 10 + 1  # 11~20, 21~30 ...
+        end = start + 9
+        key = f"{start}~{end}"
+        bins.setdefault(key, []).append(f"{d['name']} ({pct}%)")
+
+    # bins 정렬: 높은 구간부터
+    def _bin_key(k: str):
+        try:
+            a = int(k.split("~")[0])
+            return -a
+        except Exception:
+            return 0
+
+    bins_sorted = {}
+    for k in sorted(bins.keys(), key=_bin_key):
+        bins_sorted[k] = bins[k]
+
+    return {
+        "files": file_rows,
+        "bins": bins_sorted,
+        "top_pairs": top_pairs,
+        "pair_details": pair_details,
+    }
+# ======================================================================
+
 # === [ADD] 필수내용(템플릿) 유사도: 중복엔진(_dedup_intra) 재사용 =========
+
 def _guide_match_by_dedup_engine(text: str, templates: list[str],
                                  min_len: int = 6, sim_threshold: float = 0.85):
     """
@@ -3855,6 +4265,161 @@ def hybrid_score(a: str, b: str) -> float:
     # 단어와 문자 유사도의 가중 평균(실전 검증치)
     return 0.55 * cr + 0.45 * tj
 
+def _dedup_inter_lite_v2(
+    files,
+    min_len: int = 6,
+    max_chars: int = 8000,
+    n: int = 4,
+    min_ratio: float = 0.01,
+):
+    """
+    다문서 요약 유사도 (문서 단위 재활용 판정용)
+
+    - 각 문서를 kr_norm 으로 정규화한 뒤 hybrid_score 기반으로
+      문서 전체 유사도(0~1)를 계산.
+    - 결과:
+      - per_file: 파일별 최대/평균 유사도 + 상위 매칭 리스트
+      - pairs: 파일 쌍별 유사도 + '재활용 band' 라벨
+    """
+
+    # 1) 전처리: 이름/텍스트 정리
+    docs = []
+    for idx, f in enumerate(files):
+        name = str(f.get("name") or f"doc_{idx+1}")
+        raw = (f.get("text") or "")[:max_chars]
+        norm = kr_norm(raw)
+        docs.append({
+            "index": idx,
+            "name": name,
+            "raw": raw,
+            "norm": norm,
+            "length": len(norm),
+        })
+
+    n_docs = len(docs)
+    if n_docs < 2:
+        return {
+            "ok": True,
+            "mode": "lite",
+            "min_ratio": min_ratio,
+            "per_file": [],
+            "pairs": [],
+        }
+
+    # 2) 재활용 구간 라벨러
+    def classify_band(score: float) -> str:
+        # score는 hybrid_score 기준 (0~1)
+        if score >= 0.80:
+            return "강한 재활용(80%+)"
+        if score >= 0.50:
+            return "부분 재활용(50~79%)"
+        if score >= 0.30:
+            return "부분 중복(30~49%)"
+        if score >= 0.10:
+            return "경미한 중복(10~29%)"
+        return "거의 없음(<10%)"
+
+    pair_rows = []
+    neighbors = {d["index"]: [] for d in docs}
+
+    # 3) 문서 쌍별 전체 유사도 계산
+    for i in range(n_docs):
+        for j in range(i + 1, n_docs):
+            di = docs[i]
+            dj = docs[j]
+
+            # hybrid_score = 0.55*문자유사 + 0.45*토큰자카드
+            s = hybrid_score(di["norm"], dj["norm"])
+
+            # 너무 낮은 건 버리기
+            if s < min_ratio:
+                continue
+
+            band = classify_band(s)
+
+            rec = {
+                "i": di["index"],
+                "j": dj["index"],
+                "name_i": di["name"],
+                "name_j": dj["name"],
+                "len_i": di["length"],
+                "len_j": dj["length"],
+                "sim_score": round(s, 3),
+                "band": band,
+                "reuse_suspected": bool(s >= 0.80),
+            }
+            pair_rows.append(rec)
+
+            # 양쪽 문서에 모두 neighbor 등록
+            neighbors[di["index"]].append({
+                "other_index": dj["index"],
+                "other_name": dj["name"],
+                "sim_score": round(s, 3),
+                "band": band,
+                "reuse_suspected": bool(s >= 0.80),
+            })
+            neighbors[dj["index"]].append({
+                "other_index": di["index"],
+                "other_name": di["name"],
+                "sim_score": round(s, 3),
+                "band": band,
+                "reuse_suspected": bool(s >= 0.80),
+            })
+
+    # 4) 파일별 요약 (최대/평균 유사도 + TOP 매칭)
+    per_file = []
+    for d in docs:
+        neigh = sorted(
+            neighbors[d["index"]],
+            key=lambda x: x["sim_score"],
+            reverse=True,
+        )
+        top = neigh[:10]
+        max_score = top[0]["sim_score"] if top else 0.0
+        avg_score = (
+            sum(x["sim_score"] for x in neigh) / len(neigh)
+            if neigh else 0.0
+        )
+        reuse_level = classify_band(max_score)
+
+        per_file.append({
+            "index": d["index"],
+            "name": d["name"],
+            "length": d["length"],
+            "max_sim": round(max_score, 3),
+            "avg_sim": round(avg_score, 3),
+            "reuse_level": reuse_level,
+            "top_matches": top,
+        })
+
+    # 재활용 의심이 높은 순으로 정렬해서 보기 편하게
+    per_file.sort(key=lambda x: x["max_sim"], reverse=True)
+    pair_rows.sort(key=lambda x: x["sim_score"], reverse=True)
+
+    return {
+        "ok": True,
+        "mode": "lite",
+        "per_file": per_file,
+        "pairs": pair_rows,
+
+        # 🔹 UI / PDF 공통 사용 안내 메시지 추가
+        "guidance": {
+            "short_ui_notice":
+                "※ 본 유사도 값은 문장 구조·패턴 기반 내부 중복 탐지 결과이며, "
+                "값이 높을수록 템플릿 재사용 가능성이 큼을 의미합니다. "
+                "0~10%: 자연스러운 유사 수준 / 11~20%: 주의·수정 권장 / "
+                "21~30%: 재작성·집중 점검 권장 / 31% 이상: 재활용 원고 의심(사용 자제 권장)",
+
+            "pdf_detailed_notice":
+                "본 보고서의 유사도 값은 문장 패턴·서술 구조·반복 표현을 중심으로 평가된 "
+                "내부 검수 지표이며, 외부 표절 서비스의 표절율과 직접 비교되지 않습니다. "
+                "유사도 값은 법적 책임 판단 기준이 아닌 재활용 위험도 지표로 해석해야 합니다. "
+                "0~10%: 자연스러운 유사 수준 / 11~20%: 주의 필요 / 21~30%: 재작성 권고 / "
+                "31% 이상: 재활용 원고 의심(사용 불가 권장). "
+                "최종 판단은 담당자의 수동 검토를 함께 반영합니다."
+        }
+    }
+
 def contains_core_terms(text: str, terms, need: int) -> int:
     hits = 0
     for t in terms:
@@ -4132,7 +4697,16 @@ def dedup_intra():
 def dedup_inter():
     """
     여러 파일 간 도돌이표/유사 문장 탐지
-    body: { "files": [{"name": str, "text": str}, ...], "min_len": 6, "sim_threshold": 0.85 }
+    body:
+      {
+        "files": [{"name": str, "text": str}, ...],
+        "min_len": 6,
+        "sim_threshold": 0.85,
+
+        # (옵션) 요약/경량 모드
+        # "mode": "lite" | "summary" | "full",
+        # "max_chars": 8000 (요약모드에서 문서 길이 컷)
+      }
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -4145,30 +4719,69 @@ def dedup_inter():
         if limit_resp:
             return limit_resp
 
+        mode = (data.get("mode") or "full").strip().lower()
+
+        # --------------------------------------------------
+        # 🔹 summary / lite 모드 → n-gram 기반 문서 단위 유사율
+        #    - 대량(수십~수백개) 파일일 때 빠르게 요약용으로 사용
+        # --------------------------------------------------
+        if mode in ("lite", "summary"):
+            min_len = int(data.get("min_len", 6))
+
+            try:
+                summary = _dedup_inter_lite_v2(
+                    files=files,
+                    min_len=min_len,
+                    max_chars=int(data.get("max_chars") or 8000),
+                    n=max(4, min_len),
+                    min_ratio=0.01,
+                )
+
+                # (선택) 사용량 로깅
+                try:
+                    log_usage(_username_from_req(), "dedup_inter_lite", len(files))
+                except Exception:
+                    pass
+
+                return jsonify(summary)
+            except Exception as e:
+                print("[dedup_inter summary] error:", e)
+                return jsonify({"ok": False, "error": str(e)}), 500
+
+        # --------------------------------------------------
+        # 🔹 Full 모드 → 기존 상세 결과 (문장 단위 exact/similar)
+        #    - 파일 수가 상대적으로 적을 때(10~30개) 사용
+        # --------------------------------------------------
         min_len = int(data.get("min_len", 6))
-        sim_th  = float(data.get("sim_threshold", 0.85))
+        sim_th = float(data.get("sim_threshold", 0.85))
 
-        exact, sims = _dedup_inter(files, min_len=min_len, sim_threshold=sim_th)
+        exact, sims = _dedup_inter(
+            files,
+            min_len=min_len,
+            sim_threshold=sim_th,
+        )
 
-        # (선택) 사용량 로깅: 헬퍼가 있으면 유지, 없으면 무시
+        # (선택) 사용량 로깅
         try:
             log_usage(_username_from_req(), "dedup_inter", len(files))
         except Exception:
             pass
 
-        return jsonify({"exact_groups": exact, "similar_pairs": sims})
+        return jsonify({
+            "mode": "full",
+            "exact_groups": exact,
+            "similar_pairs": sims,
+        })
 
     except Exception as e:
         import traceback
         print("✘ /dedup_inter 오류:", e)
         traceback.print_exc()
-        # (선택) 에러 로깅
         try:
             log_error(_username_from_req(), "/dedup_inter", 500, str(e))
         except Exception:
             pass
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/policy_verify", methods=["POST", "OPTIONS"])
 @require_user
