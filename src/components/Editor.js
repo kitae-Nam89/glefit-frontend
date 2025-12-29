@@ -5266,7 +5266,7 @@ if (!token && !guestMode) {
           top: 24,
         }}
       >
-        <h2 style={{ marginTop: 0, marginBottom: 8 }}>하루 1,100원 다 문서 중복체크 글핏</h2>
+        <h2 style={{ marginTop: 0, marginBottom: 8 }}>대량 내부 문서 중복 체크 글핏</h2>
         <div style={{ color: "#6b7280", fontSize: 13, marginBottom: 12 }}>
           **본 로그인은 글핏 서비스 본편으로 진입합니다.**
         </div>
@@ -5365,11 +5365,11 @@ if (!token && !guestMode) {
   </p>
 
   <p style={{ marginTop: 8, fontSize: 14, color: "#111827", fontWeight: 600 }}>
-    🏦 입금: 늘솜제작소
+    🏦 늘솜제작소
   </p>
 
   <p style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: "#0f766e" }}>
-    ⚡ 빠른 ID 발급 방법
+    ⚡ 공지사항
   </p>
 
   <div
@@ -5382,13 +5382,13 @@ if (!token && !guestMode) {
       lineHeight: 1.6,
     }}
   >
-    <div style={{ fontSize: 13, color: "#6b7280" }}>결제 후</div>
+    <div style={{ fontSize: 13, color: "#6b7280" }}>개별 ID발급 종료</div>
     <div style={{ fontSize: 13, color: "#6b7280" }}>
-      입금자명: <span style={{ color: "#9ca3af" }}>입금자 오류 시 발급이 지연될 수 있습니다.</span>
+      카카오톡 문의: <span style={{ color: "#9ca3af" }}>txt365</span>
     </div>
-    <div style={{ fontSize: 13, color: "#6b7280" }}>회사명 또는 담당자명:</div>
+    <div style={{ fontSize: 13, color: "#6b7280" }}>요청 수량에 따라 스케줄이 변동됩니다.</div>
     <div style={{ fontSize: 13, color: "#6b7280" }}>
-      간략 요청 사항: 원하는 ID와 비밀번호 등 <span style={{ color: "#9ca3af" }}>중복 시 랜덤</span>
+      문의 시간: <span style={{ color: "#9ca3af" }}>주말/공휴일 검사 불가</span>
     </div>
     <div style={{ fontSize: 13, color: "#6b7280" }}>
       세금계산서: <span style={{ color: "#9ca3af" }}>사업자등록증과 메일주소 필수 전달</span>
