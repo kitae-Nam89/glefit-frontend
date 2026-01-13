@@ -68,7 +68,19 @@ function getToken() {
 // 처음 로드 시 1회 헤더 반영
 applyAuthHeader(getToken());
 
-// 6) 로그인/토큰/아이디 저장 헬퍼 ===== (추가됨) =====
+// 5-1) 간단 이벤트 로깅 (서버: /track/event)
+// - 어떤 이유로든 로깅 실패는 UI 동작에 영향 없도록 조용히 무시
+function logEvent(action, meta = {}, count = 1) {
+  try {
+    const page =
+      typeof window !== "undefined"
+        ? window.location.pathname + window.location.search
+        : "";
+    axios.post("/track/event", { action, meta, count, page }).catch(() => {});
+  } catch (e) {}
+}
+
+// 6) 로그인/토큰/아이디 저장 헬퍼 ...
 function setToken(token, opts = { auto: false }) {
   try {
     const auto = !!opts.auto;
@@ -667,7 +679,7 @@ const [showNoticeModal, setShowNoticeModal] = useState(false);
 
 // === 업로드 제한 상수/유틸 ===
 const MAX_FILES_USER = 50;
-const MAX_FILES_GUEST = 3;
+const MAX_FILES_GUEST = 50;
 
 // [ADD] 100KB 제한(일반/체험판), 관리자는 무제한
 const MAX_TEXT_BYTES_NON_ADMIN = 100 * 1024;
@@ -707,7 +719,7 @@ function clampUploadList(list = []) {
   if (canUploadUnlimited) return list;
   const limit = isGuest ? MAX_FILES_GUEST : MAX_FILES_USER;
   if (list.length > limit) {
-    alert(`업로드 제한: ${isGuest ? "체험 계정" : "일반 계정"}은 최대 ${limit}건까지 가능합니다.`);
+    alert(`업로드 제한: ${isGuest ? "로그인 없이 사용" : "일반 계정"}은 최대 ${limit}건까지 가능합니다.`);
     return list.slice(0, limit);
   }
   return list;
@@ -3794,10 +3806,19 @@ const handleInterDedup = async () => {
   // 이미 검사 중이면 중복 클릭 무시
   if (isInterChecking) return;
 
+  // 🔒 게스트(로그인 없이 사용)에서는 다문서 중복탐지 사용 불가
+  if (isGuest && !isAdmin) {
+    alert(
+      "다문서 중복탐지는 로그인 후 이용 가능합니다.\n\n" +
+      "(무료 서비스: 글자수·키워드·단어찾기·위치 확인은 사용 가능)"
+    );
+    return;
+  }
+
   // 새 교차 탐지 시작 시, 이전 요약은 비워두고 다시 계산
   setInterDocSummary([]);
 
-const localCompute = async (arr, lineIdxMap) => {
+  const localCompute = async (arr, lineIdxMap) => {
   const MIN = Number(interMinLen) || 6;
   // 🔹 interSimTh가 비어있을 때도 너무 빡세지 않게 기본값 0.70 적용
   const TH  = Number(interSimTh) || 0.70;
@@ -5330,14 +5351,40 @@ if (!token && !guestMode) {
         {/* ───── 추가: 구분선 + 데모 체험 버튼/안내 ───── */}
         <div style={{ margin: "10px 0", textAlign: "center", color: "#9ca3af", fontSize: 12 }}>또는</div>
 
-        <button
-          type="button"
-          onClick={() => setGuestMode(true)}
-          style={{ width: "100%", padding: "10px", borderRadius: 8, border: "1px solid #d1d5db", background: "#f9fafb" }}
-          title="체험판: 업로드 3건, 단어찾기/다문서 중복만 가능, 보고서 저장 불가"
-        >
-          데모 체험(제한 모드)
-        </button>
+<button
+  type="button"
+  onClick={() => {
+    // ✅ 서버(API_BASE)로 확실히 기록되게: axios 사용(axios baseURL=API_BASE 전제)
+    try {
+      axios
+        .post("/track/free_click", {
+          page:
+            typeof window !== "undefined"
+              ? window.location.pathname + window.location.search
+              : "",
+        })
+        .catch(() => {});
+    } catch (e) {}
+
+    setGuestMode(true);
+  }}
+  style={{
+    width: "100%",
+    padding: "12px",
+    borderRadius: 8,
+    border: "1px solid #dc2626",
+    background: "#dc2626",
+    color: "white",
+    fontWeight: 700,
+    fontSize: 15,
+    boxShadow: "0 4px 10px rgba(220,38,38,0.25)",
+    cursor: "pointer",
+  }}
+  title="로그인 없이 무료 사용 · 업로드 50건 · 실시간 글자수/키워드/단어찾기"
+>
+  무료 서비스 이용하기
+</button>
+
 
 {/* ====== 상단 고정 안내(강조) ====== */}
 <div
@@ -5349,71 +5396,54 @@ if (!token && !guestMode) {
     marginBottom: 12,
   }}
 >
-  <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#111827" }}>
-    💳 계정당 <span style={{ color: "#dc2626" }}>문의/월</span>
-    <span style={{ fontWeight: 500, color: "#6b7280" }}>
-      {" "} (계정 공유·대여 시 이용 제한)
-    </span>
-  </p>
+<p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#111827" }}>
+  🧩 여러 문서를 한 번에 분석하는 <span style={{ color: "#dc2626" }}> 글핏 </span>
+  <span style={{ fontWeight: 500, color: "#6b7280" }}>
+    {" "} (로그인 없이 사용)
+  </span>
+</p>
 
-  <p style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: "#1d4ed8" }}>
-    📞 글핏 이용 문의: txt365 (카카오톡)<br />
-    <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 400 }}>
-      ※ 문의는 내부 사정에 따라 최대 1~2일이 소요될 수 있으며,<br />
-      &nbsp;&nbsp;&nbsp;공휴일·주말은 응답이 불가합니다.
-    </span>
-  </p>
+<p style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: "#1d4ed8" }}>
+  실시간 확인: 글자수 · 키워드 횟수 · 키워드 위치 · 단어찾기
+  <br />
+  <span style={{ fontSize: 12, color: "#6b7280", fontWeight: 400 }}>
+    파일 업로드 <b>최대 50건</b> 지원
+  </span>
+</p>
 
-  <p style={{ marginTop: 8, fontSize: 14, color: "#111827", fontWeight: 600 }}>
-    🏦 늘솜제작소
-  </p>
+<p style={{ marginTop: 8, fontSize: 13, color: "#111827", fontWeight: 600 }}>
+  📂 대량 문서 기본 검수 시간을 획기적으로 줄여보세요.
+</p>
 
-  <p style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: "#0f766e" }}>
-    ⚡ 공지사항
-  </p>
+<p style={{ marginTop: 10, fontSize: 14, fontWeight: 700, color: "#0f766e" }}>
+  ⚠️ 다문서 중복탐지 (요약/상세) 별도 문의: txt365 (카카오톡)
+</p>
 
-  <div
-    style={{
-      marginTop: 6,
-      padding: 8,
-      background: "#f9fafb",
-      border: "1px dashed #e5e7eb",
-      borderRadius: 8,
-      lineHeight: 1.6,
-    }}
-  >
-    <div style={{ fontSize: 13, color: "#6b7280" }}>개별 ID발급 종료</div>
-    <div style={{ fontSize: 13, color: "#6b7280" }}>
-      카카오톡 문의: <span style={{ color: "#9ca3af" }}>txt365</span>
-    </div>
-    <div style={{ fontSize: 13, color: "#6b7280" }}>요청 수량에 따라 스케줄이 변동됩니다.</div>
-    <div style={{ fontSize: 13, color: "#6b7280" }}>
-      문의 시간: <span style={{ color: "#9ca3af" }}>주말/공휴일 검사 불가</span>
-    </div>
-    <div style={{ fontSize: 13, color: "#6b7280" }}>
-      세금계산서: <span style={{ color: "#9ca3af" }}>사업자등록증과 메일주소 필수 전달</span>
-    </div>
+<div
+  style={{
+    marginTop: 6,
+    padding: 8,
+    background: "#f9fafb",
+    border: "1px dashed #e5e7eb",
+    borderRadius: 8,
+    lineHeight: 1.6,
+  }}
+>
+  <div style={{ fontSize: 13, color: "#6b7280" }}>
+    • TXT , DOCX 파일명을 <b>키워드</b>로 인식합니다. (직접 수정 가능)
   </div>
+  <div style={{ fontSize: 13, color: "#6b7280" }}>
+    • 여러 파일을 동시에 넣고 <b>다음</b>을 누르면 한 번에 비교·확인됩니다.
+  </div>
+  <div style={{ fontSize: 13, color: "#6b7280" }}>
+    • 여러 파일 동시에 드레그 지원
+  </div>
+</div>
 </div>
 
 {/* ====== 기존 멘트(아래 유지) ====== */}
-<p style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-  ※ 체험판은 로그인 없이 사용 가능: 업로드 3건 / 단어찾기·다문서 중복
-</p>
-<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-  ※ 서비스 운영 일정 및 요금 정책은 예고 없이 변경될 수 있습니다. 
-</p>
-<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-  ※ ID·비밀번호는 타인과 공유하지 말고 개인 보관을 권장드립니다. 
-</p>
-<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-  ※ 1계정 1접속만 가능하며, 계정 공유·대여 시 이용이 제한됩니다.
-</p>
-<p style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
-  ※ 환불은 불가하며, 서비스 사용 내역(횟수·파일 수)이 기록됩니다.
-</p>
 <p style={{ marginTop: 4, fontSize: 12, color: "#dc2626", fontWeight: 700 }}>
-  ⚠ 모든 검수 결과는 참고용입니다. 최종 게시 전 담당자 확인이 필수입니다.
+  ⚠ (유료서비스) 중복검사는 포스팅 전 신규 원고 간의 중복률을 검사할 수 있습니다.
 </p>
       </form>
     </div>
@@ -5505,8 +5535,8 @@ if (!token && !guestMode) {
             </div>
           </div>
           <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
-            ※ 데모 체험: 업로드 3건, 단어찾기/다문서 중복 검사만 사용
-            가능. 보고서 저장/맞춤법·문맥/전체검사 제한.
+            ※ 로그인 없이 누구든 사용 가능합니다. 업로드 50건까지 지원하며
+            실시간 글자수·키워드 횟수·단어찾기를 바로 확인할 수 있습니다. (다문서 중복탐지는 유료 기능)
           </div>
         </div>
       </div>
@@ -6752,24 +6782,38 @@ onClick={() => {
       />
     </label>
 
-    <button
-      onClick={!isInterChecking ? handleInterDedup : undefined}
-      disabled={!files.length || isInterChecking}
-    >
-      {isInterChecking ? "검사중…" : "탐지"}
-    </button>
+<button
+  onClick={() => {
+    if (isInterChecking) return;
+    if (!files.length) return;
+
+    if (isGuest && !isAdmin) {
+      logEvent("inter_lock_click", { source: "inter_button" });
+      alert("다문서 중복탐지 보고서는 별도 문의로 제공됩니다.\n\n카카오톡: txt365");
+      return;
+    }
+
+    logEvent("inter_run_click", { source: "inter_button" });
+    handleInterDedup();
+  }}
+  disabled={!files.length || isInterChecking}
+  title={isGuest && !isAdmin ? "다문서 중복탐지는 문의로 제공됩니다" : undefined}
+  style={(isGuest && !isAdmin) ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
+>
+  {isInterChecking ? "검사중…" : (isGuest && !isAdmin ? "🔒 탐지" : "탐지")}
+</button>
   </div>
 
   {/* 저장 버튼들 */}
   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
     {/* 요약 보고서: 파일 간 유사율 표만 간단히 정리 */}
-    <button
-      onClick={saveInterDedupReportPDF}
-      disabled={isChecking || !(interExactGroups?.length || interSimilarGroups?.length)}
-      title="여러 문서 간 유사율을 파일별로 정리한 요약 보고서"
-    >
-      요약 보고서(PDF)
-    </button>
+<button
+  onClick={saveInterDedupReportPDF}
+  disabled={isChecking || (isGuest && !isAdmin) || !(interExactGroups?.length || interSimilarGroups?.length)}
+  title={(isGuest && !isAdmin) ? "로그인 후 이용 가능합니다" : "여러 문서 간 그룹(정확/유사) 보고서"}
+>
+  요약 보고서(PDF)
+</button>
 
     {/* 상세 보고서: 각 파일별 중복·유사 문장과 내용을 전부 포함 */}
     <button

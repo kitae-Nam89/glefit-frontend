@@ -179,7 +179,7 @@ export default function AdminPage(){
     if(!token) return; setUsageLoading(true);
     try{
       const { data } = await axios.get(`${API_BASE}/admin/usage_summary`);
-      setUsageSummary({ usage:data?.usage||[], errors:data?.errors||[], agreements:data?.agreements||[] });
+      setUsageSummary({ usage:data?.usage||[], errors:data?.errors||[], agreements:data?.agreements||[], metrics:data?.metrics||{} });
     } finally { setUsageLoading(false); }
   },[token]);
   useEffect(()=>{ if(token) loadUsageSummary(); },[token, loadUsageSummary]);
@@ -862,265 +862,237 @@ async function onToggleUserBlock(username, nextBlocked){
   </div>
 </div>
 
-        {/* 우: 운영 통계 + 트래픽 (보조, 접기 가능) */}
-        {showSidePanel && (
-          <div className="right-col">
-            {/* 운영 통계 */}
-            <div className="card">
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: 10,
-                }}
-              >
-                <h2 className="h2">운영 통계</h2>
-                <button
-                  className="btn"
-                  onClick={loadUsageSummary}
-                  disabled={usageLoading}
-                >
-                  {usageLoading ? "새로고침..." : "새로고침"}
-                </button>
-              </div>
-
-              {/* KPI 카드 */}
-              <div className="kpis" style={{ marginBottom: 10 }}>
-                <div className="card" style={{ padding: 12 }}>
-                  <div className="small">동의(환불규정) 기록</div>
-                  <div style={{ fontSize: 18, fontWeight: 600 }}>
-                    {usageSummary.agreements?.length || 0}
-                  </div>
-                </div>
-                <div className="card" style={{ padding: 12 }}>
-                  <div className="small">에러 사용자 수</div>
-                  <div style={{ fontSize: 18, fontWeight: 600 }}>
-                    {usageSummary.errors?.length || 0}
-                  </div>
-                </div>
-                <div className="card" style={{ padding: 12 }}>
-                  <div className="small">집계 사용자 수</div>
-                  <div style={{ fontSize: 18, fontWeight: 600 }}>
-                    {usageSummary.usage?.length || 0}
-                  </div>
-                </div>
-              </div>
-
-              {/* 사용량 테이블 */}
-              <div style={{ overflowX: "auto", maxWidth: "100%" }}>
-                <div ref={usageScrollRef} className="scrollx">
-                  <table className="table minw-usage">
-                    <thead>
-                      <tr>
-                        <th>아이디</th>
-                        <th>verify</th>
-                        <th>policy</th>
-                        <th>dedup_inter</th>
-                        <th>dedup_intra</th>
-                        <th>files합</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {usageSummary.usage?.length ? (
-                        usageSummary.usage.map((u) => (
-                          <tr key={u.username}>
-                            <td className="mono">{u.username}</td>
-                            <td align="center">{u.verify || 0}</td>
-                            <td align="center">{u.policy || 0}</td>
-                            <td align="center">{u.dedup_inter || 0}</td>
-                            <td align="center">{u.dedup_intra || 0}</td>
-                            <td align="center">{u.files || 0}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td
-                            colSpan={6}
-                            align="center"
-                            className="small"
-                          >
-                            데이터 없음
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* 에러 테이블 */}
-              <div
-                style={{
-                  overflowX: "auto",
-                  maxWidth: "100%",
-                  marginTop: 10,
-                }}
-              >
-                <div className="scrollx">
-                  <table className="table minw-usage">
-                    <thead>
-                      <tr>
-                        <th>아이디</th>
-                        <th>에러수</th>
-                        <th>마지막</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {usageSummary.errors?.length ? (
-                        usageSummary.errors.map((e) => (
-                          <tr key={e.username}>
-                            <td className="mono">{e.username || "-"}</td>
-                            <td align="center">{e.errors || 0}</td>
-                            <td>{e.last || "-"}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td
-                            colSpan={3}
-                            align="center"
-                            className="small"
-                          >
-                            에러 기록 없음
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-
-            {/* 트래픽 */}
-            <div className="card">
-              <div
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  flexWrap: "wrap",
-                  alignItems: "end",
-                  justifyContent: "space-between",
-                  marginBottom: 10,
-                }}
-              >
-                <h2 className="h2">접속·로그인 트래픽</h2>
-                <div className="toolbar">
-                  <label className="small">기간</label>
-                  <input
-                    type="date"
-                    className="input"
-                    style={{ width: 150 }}
-                    value={range.start}
-                    onChange={(e) =>
-                      setRange((v) => ({ ...v, start: e.target.value }))
-                    }
-                  />
-                  <span className="small">~</span>
-                  <input
-                    type="date"
-                    className="input"
-                    style={{ width: 150 }}
-                    value={range.end}
-                    onChange={(e) =>
-                      setRange((v) => ({ ...v, end: e.target.value }))
-                    }
-                  />
-
-                  <select
-                    className="select"
-                    style={{ width: 110 }}
-                    value={gran}
-                    onChange={(e) => setGran(e.target.value)}
-                  >
-                    <option value="day">일별</option>
-                    <option value="week">주별</option>
-                    <option value="month">월별</option>
-                  </select>
-                  <button
-                    className="btn"
-                    onClick={loadTraffic}
-                    disabled={trafficLoading}
-                  >
-                    {trafficLoading ? "불러오는 중..." : "새로고침"}
-                  </button>
-                </div>
-              </div>
-
-              {/* 트래픽 KPI */}
-              <div className="kpis" style={{ marginBottom: 10 }}>
-                <div className="card" style={{ padding: 12 }}>
-                  <div className="small">총 방문수</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>
-                    {traffic?.totals?.visits ?? 0}
-                  </div>
-                </div>
-                <div className="card" style={{ padding: 12 }}>
-                  <div className="small">총 로그인수</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>
-                    {traffic?.totals?.logins ?? 0}
-                  </div>
-                </div>
-                <div className="card" style={{ padding: 12 }}>
-                  <div className="small">유니크 로그인(ID)</div>
-                  <div style={{ fontSize: 20, fontWeight: 700 }}>
-                    {traffic?.totals?.unique_users ?? 0}
-                  </div>
-                </div>
-              </div>
-
-              {/* 트래픽 표 */}
-              <div style={{ overflowX: "auto", maxWidth: "100%" }}>
-                <div ref={trafficScrollRef} className="scrollx">
-                  <table className="table minw-traffic">
-                    <thead>
-                      <tr>
-                        <th>버킷</th>
-                        <th>방문수</th>
-                        <th>로그인수</th>
-                        <th>Active Users*</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Array.isArray(traffic?.series) &&
-                      traffic.series.length > 0 ? (
-                        traffic.series
-                          .slice()
-                          .reverse()
-                          .map((r) => (
-                            <tr key={r.bucket}>
-                              <td className="mono">{r.bucket}</td>
-                              <td align="right">{r.visits ?? 0}</td>
-                              <td align="right">{r.logins ?? 0}</td>
-                              <td align="right">
-                                {r.active_users ?? "-"}
-                              </td>
-                            </tr>
-                          ))
-                      ) : (
-                        <tr>
-                          <td
-                            colSpan={4}
-                            align="center"
-                            className="small"
-                          >
-                            데이터가 없습니다
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="small" style={{ marginTop: 6 }}>
-                * 주/월 집계에서는 기간 내 유니크 로그인 수가 고정값으로
-                표시됩니다.
-              </div>
-            </div>
-          </div>
-        )}
+{/* 우: 운영 통계 + 트래픽 (보조, 접기 가능) */}
+{showSidePanel && (
+  <div className="right-col">
+    {/* 운영 통계 */}
+    <div className="card">
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 10,
+        }}
+      >
+        <h2 className="h2">운영 통계</h2>
+        <button className="btn" onClick={loadUsageSummary} disabled={usageLoading}>
+          {usageLoading ? "새로고침..." : "새로고침"}
+        </button>
       </div>
+
+      {/* KPI 카드 */}
+      <div className="kpis" style={{ marginBottom: 10 }}>
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">동의(환불규정) 기록</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>
+            {usageSummary.agreements?.length || 0}
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">무료서비스 클릭</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>
+            {usageSummary.metrics?.free_clicks ?? 0}
+          </div>
+          <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>
+            (guest 포함)
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">집계 사용자 수</div>
+          <div style={{ fontSize: 18, fontWeight: 600 }}>
+            {usageSummary.usage?.length || 0}
+          </div>
+        </div>
+      </div>
+
+      {/* 추가 KPI: 게스트 실제 사용량(서버 metrics에 값이 있으면 표시됨) */}
+      <div className="kpis" style={{ marginBottom: 10 }}>
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">게스트 업로드</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
+            {usageSummary.metrics?.guest_uploads ?? 0}
+          </div>
+          <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>
+            (files 업로드 시도)
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">게스트 다문서 탐지</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
+            {usageSummary.metrics?.guest_dedup_inter ?? 0}
+          </div>
+          <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>
+            (dedup_inter)
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">게스트 단일문서 탐지</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
+            {usageSummary.metrics?.guest_dedup_intra ?? 0}
+          </div>
+          <div className="small" style={{ marginTop: 6, opacity: 0.85 }}>
+            (dedup_intra)
+          </div>
+        </div>
+      </div>
+
+      {/* 운영 통계 표 */}
+      <div ref={usageScrollRef} className="scrollx">
+        <table className="table minw-usage">
+          <thead>
+            <tr>
+              <th>아이디</th>
+              <th>verify</th>
+              <th>policy</th>
+              <th>dedup_inter</th>
+              <th>dedup_intra</th>
+              <th>files합</th>
+            </tr>
+          </thead>
+          <tbody>
+            {usageSummary.usage?.length ? (
+              usageSummary.usage.map((u) => (
+                <tr key={u.username}>
+                  <td className="mono">{u.username}</td>
+                  <td align="center">{u.verify || 0}</td>
+                  <td align="center">{u.policy || 0}</td>
+                  <td align="center">{u.dedup_inter || 0}</td>
+                  <td align="center">{u.dedup_intra || 0}</td>
+                  <td align="center">{u.files || 0}</td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={6} align="center" className="small">
+                  데이터 없음
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* (옵션) 에러/기타 테이블 자리 - 필요하면 여기 확장 */}
+    </div>
+
+    {/* 트래픽 */}
+    <div className="card">
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "end",
+          justifyContent: "space-between",
+          marginBottom: 10,
+        }}
+      >
+        <h2 className="h2">접속·로그인 트래픽</h2>
+        <div className="toolbar">
+          <label className="small">기간</label>
+          <input
+            type="date"
+            className="input"
+            style={{ width: 150 }}
+            value={range.start}
+            onChange={(e) => setRange((v) => ({ ...v, start: e.target.value }))}
+          />
+          <span className="small">~</span>
+          <input
+            type="date"
+            className="input"
+            style={{ width: 150 }}
+            value={range.end}
+            onChange={(e) => setRange((v) => ({ ...v, end: e.target.value }))}
+          />
+
+          <select
+            className="select"
+            style={{ width: 110 }}
+            value={gran}
+            onChange={(e) => setGran(e.target.value)}
+          >
+            <option value="day">일별</option>
+            <option value="week">주별</option>
+            <option value="month">월별</option>
+          </select>
+
+          <button className="btn" onClick={loadTraffic} disabled={trafficLoading}>
+            {trafficLoading ? "불러오는 중..." : "새로고침"}
+          </button>
+        </div>
+      </div>
+
+      {/* 트래픽 KPI */}
+      <div className="kpis" style={{ marginBottom: 10 }}>
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">총 방문수</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>
+            {traffic?.totals?.visits ?? 0}
+          </div>
+        </div>
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">총 로그인수</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>
+            {traffic?.totals?.logins ?? 0}
+          </div>
+        </div>
+        <div className="card" style={{ padding: 12 }}>
+          <div className="small">유니크 로그인(ID)</div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>
+            {traffic?.totals?.unique_users ?? 0}
+          </div>
+        </div>
+      </div>
+
+      {/* 트래픽 표 */}
+      <div style={{ overflowX: "auto", maxWidth: "100%" }}>
+        <div ref={trafficScrollRef} className="scrollx">
+          <table className="table minw-traffic">
+            <thead>
+              <tr>
+                <th>버킷</th>
+                <th>방문수</th>
+                <th>로그인수</th>
+                <th>Active Users*</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Array.isArray(traffic?.series) && traffic.series.length > 0 ? (
+                traffic.series
+                  .slice()
+                  .reverse()
+                  .map((r) => (
+                    <tr key={r.bucket}>
+                      <td className="mono">{r.bucket}</td>
+                      <td align="right">{r.visits ?? 0}</td>
+                      <td align="right">{r.logins ?? 0}</td>
+                      <td align="right">{r.active_users ?? "-"}</td>
+                    </tr>
+                  ))
+              ) : (
+                <tr>
+                  <td colSpan={4} align="center" className="small">
+                    데이터가 없습니다
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="small" style={{ marginTop: 6 }}>
+        * 주/월 집계에서는 기간 내 유니크 로그인 수가 고정값으로 표시됩니다.
+      </div>
+    </div>
+  </div>
+)}      </div>
     </div>
   );
 }

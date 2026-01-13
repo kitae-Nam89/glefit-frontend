@@ -2599,17 +2599,95 @@ def auth_agree_refund():
     conn.commit(); conn.close()
     return jsonify({"ok": True})
 
-@app.post("/track/visit")
-def track_visit():
+@app.post("/track/event")
+def track_event():
+    """간단 유입 체크용 이벤트 로거 (GA 없이도 1~2일 내 판단 가능)
+    - action: 문자열 (예: free_button_click, guest_upload_attempt, dedup_inter_locked_click)
+    - count : 숫자(예: 업로드 파일 수)
+    - is_guest: bool (게스트/무료모드 식별용)
+    """
     try:
         body = request.get_json(force=True, silent=True) or {}
-        path = (body.get("path") or "/").strip()
+        action = (body.get("action") or "").strip()
+        count = int(body.get("count") or 0)
+
         # 토큰이 있으면 유저명 추출, 없으면 공백 처리
         username = _username_from_req()
-        log_visit(username, path)
+        is_guest = bool(body.get("is_guest"))
+
+        if (not username) and is_guest:
+            username = "guest"
+
+        if action:
+            # usage_logs에 "event:<action>" 형태로 남김
+            log_usage(username, f"event:{action}", count)
+            try:
+                print(f"[event] user={username or ''} action={action} count={count}")
+            except Exception:
+                pass
+
         return jsonify({"ok": True})
     except Exception:
         return jsonify({"ok": False}), 200
+
+@app.route("/track/free_click", methods=["POST", "OPTIONS"])
+def track_free_click():
+    """무료 서비스 버튼 클릭 카운트 전용 (프런트: /track/free_click)
+    - 로그인 없이도 호출될 수 있으므로 guest로 집계
+    - usage_logs.action = 'event:free_button_click' 로 기록
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        username = _username_from_req()
+        if not username:
+            username = "guest"
+
+        # page는 참고용(필요시 확장)
+        page = (body.get("page") or "").strip()
+
+        try:
+            log_usage(username, "event:free_button_click", 1)
+        except Exception:
+            pass
+
+        return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"ok": False}), 200
+
+@app.route("/track/visit", methods=["POST", "OPTIONS"])
+def track_visit():
+    """페이지 방문 트래킹 (프런트: axios.post('/track/visit', {page}) )
+    - 방문 로그/트래픽 집계용
+    - 로그인 없이도 올 수 있으므로 guest 허용
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        username = _username_from_req() or "guest"
+        page = (body.get("page") or "").strip()
+
+        # ✅ 트래픽 테이블이 있으면 여기에 적재(프로젝트에 log_visit 유틸이 이미 있음)
+        try:
+            log_visit(username, page or "")
+        except Exception:
+            pass
+
+        # (선택) usage_logs에도 남기고 싶으면:
+        # try:
+        #     log_usage(username, "event:visit", 1)
+        # except Exception:
+        #     pass
+
+        return jsonify({"ok": True})
+    except Exception:
+        return jsonify({"ok": False}), 200
+
+
 
 @app.route("/auth/me", methods=["GET", "OPTIONS"])
 @require_user
@@ -2810,6 +2888,7 @@ def admin_delete_user():
 
     if not username:
         return jsonify({"error": "username required"}), 400
+
     # 최상위 관리자 보호 (필요 없다면 주석 처리)
     if username == "admin":
         return jsonify({"error": "cannot delete admin"}), 400
@@ -2825,12 +2904,20 @@ def admin_delete_user():
         # 토큰 파싱 실패 시 자기삭제 방지는 건너뛰되, admin 보호는 위에서 이미 적용됨
         pass
 
-    # 실제 삭제
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
+    # 1) users 삭제
     cur.execute("DELETE FROM users WHERE username = ?", (username,))
+    deleted = int(cur.rowcount or 0)
+
+    # 2) 운영통계/동의 등 잔여 로그도 함께 삭제 (아이디 삭제 후 운영통계에 남는 문제 해결)
+    cur.execute("DELETE FROM usage_logs WHERE username = ?", (username,))
+    cur.execute("DELETE FROM error_logs WHERE username = ?", (username,))
+    cur.execute("DELETE FROM visit_logs WHERE username = ?", (username,))
+    cur.execute("DELETE FROM agreements WHERE username = ?", (username,))
+
     conn.commit()
-    deleted = cur.rowcount
     conn.close()
 
     if deleted == 0:
@@ -4897,22 +4984,25 @@ def admin_usage_summary():
     {
       "usage":[ {username, verify, policy, dedup_inter, dedup_intra, files}, ... ],
       "errors":[ {username, errors, last}, ... ],
-      "agreements":[ {username, agreed_at}, ... ]
+      "agreements":[ {username, agreed_at}, ... ],
+      "metrics": { "free_clicks": n }
     }
     """
-    conn = sqlite3.connect(DB_PATH); cur = conn.cursor()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
 
-    # usage_logs 집계
+    # usage_logs 집계 (users 기준으로만 → 삭제된 아이디 자동 제외)
     cur.execute("""
-      SELECT username,
-             SUM(CASE WHEN action='verify' THEN 1 ELSE 0 END) AS verify,
-             SUM(CASE WHEN action='policy' THEN 1 ELSE 0 END) AS policy,
-             SUM(CASE WHEN action='dedup_inter' THEN 1 ELSE 0 END) AS dedup_inter,
-             SUM(CASE WHEN action='dedup_intra' THEN 1 ELSE 0 END) AS dedup_intra,
-             SUM(files_count) AS files
-      FROM usage_logs
-      GROUP BY username
-      ORDER BY username
+        SELECT u.username,
+               SUM(CASE WHEN ul.action='verify' THEN 1 ELSE 0 END) AS verify,
+               SUM(CASE WHEN ul.action='policy' THEN 1 ELSE 0 END) AS policy,
+               SUM(CASE WHEN ul.action='dedup_inter' THEN 1 ELSE 0 END) AS dedup_inter,
+               SUM(CASE WHEN ul.action='dedup_intra' THEN 1 ELSE 0 END) AS dedup_intra,
+               SUM(IFNULL(ul.files_count,0)) AS files
+        FROM users u
+        LEFT JOIN usage_logs ul ON ul.username = u.username
+        GROUP BY u.username
+        ORDER BY u.username
     """)
     usage = []
     for row in cur.fetchall():
@@ -4925,12 +5015,15 @@ def admin_usage_summary():
             "files": row[5] or 0
         })
 
-    # error_logs 집계(유저별 개수 + 마지막 시각)
+    # error_logs 집계(유저별 개수 + 마지막 시각) (users 기준으로만 → 삭제된 아이디 자동 제외)
     cur.execute("""
-      SELECT username, COUNT(*),
-             MAX(created_at)
-      FROM error_logs
-      GROUP BY username
+        SELECT u.username,
+               COUNT(el.id) AS errors,
+               MAX(el.created_at) AS last
+        FROM users u
+        LEFT JOIN error_logs el ON el.username = u.username
+        GROUP BY u.username
+        ORDER BY u.username
     """)
     errors = []
     for row in cur.fetchall():
@@ -4940,12 +5033,28 @@ def admin_usage_summary():
             "last": row[2] or ""
         })
 
-    # 동의 목록
-    cur.execute("SELECT username, agreed_at FROM agreements ORDER BY agreed_at DESC")
+    # 동의 목록 (users에 남아있는 계정만)
+    cur.execute("""
+        SELECT a.username, a.agreed_at
+        FROM agreements a
+        JOIN users u ON u.username = a.username
+        ORDER BY a.agreed_at DESC
+    """)
     agreements = [{"username": r[0], "agreed_at": r[1]} for r in cur.fetchall()]
 
+    # ✅ 무료 서비스 버튼 클릭 카운트(에디터의 /track/free_click로 기록된 usage_logs 이벤트 집계)
+    # - 전제: /track/free_click 라우트가 usage_logs.action='event:free_button_click'로 기록하도록 구현돼 있어야 함
+    cur.execute("SELECT COUNT(*) FROM usage_logs WHERE action = 'event:free_button_click'")
+    free_clicks = int((cur.fetchone() or [0])[0] or 0)
+
     conn.close()
-    return jsonify({"usage": usage, "errors": errors, "agreements": agreements})
+    return jsonify({
+        "usage": usage,
+        "errors": errors,
+        "agreements": agreements,
+        "metrics": { "free_clicks": free_clicks }
+    })
+
 
 @app.get("/admin/traffic_summary")
 @require_admin
