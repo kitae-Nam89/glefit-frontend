@@ -44,6 +44,10 @@ axios.defaults.baseURL = API_BASE;
 // 4) 토큰/헤더 유틸 상수
 const AUTH_KEY_LOCAL   = "glefit_token";          // 자동로그인: localStorage
 const AUTH_KEY_SESS    = "glefit_token_session";  // 일반로그인: sessionStorage
+
+// ✅ 현재 운영/보드에서 실제로 저장되는 토큰 키(브라우저 확인됨)
+const AUTH_KEY_BOARD   = "glefit_board_token";
+
 const REMEMBER_ID_KEY  = "glefit_saved_id";       // 로그인 아이디 저장
 const AUTO_LOGIN_KEY   = "glefit_auto_login";     // "1"=자동, "0"=일반
 
@@ -57,9 +61,11 @@ function applyAuthHeader(token) {
 }
 
 // 현재 저장된 토큰 읽기
+// ✅ 우선순위: session(일반로그인) -> board(현재 실제키) -> local(자동로그인)
 function getToken() {
   return (
     (typeof sessionStorage !== "undefined" && sessionStorage.getItem(AUTH_KEY_SESS)) ||
+    (typeof localStorage  !== "undefined" && localStorage.getItem(AUTH_KEY_BOARD)) ||
     (typeof localStorage  !== "undefined" && localStorage.getItem(AUTH_KEY_LOCAL)) ||
     ""
   );
@@ -112,6 +118,7 @@ function clearToken() {
   try {
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem(AUTH_KEY_LOCAL);
+      localStorage.removeItem(AUTH_KEY_BOARD); // ✅ 추가
       localStorage.removeItem(AUTO_LOGIN_KEY);
     }
     if (typeof sessionStorage !== "undefined") {
