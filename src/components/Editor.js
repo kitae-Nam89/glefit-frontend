@@ -4557,9 +4557,16 @@ const saveInterDedupReportPDF = async () => {
         ? files.map((f) => f?.name).filter(Boolean)
         : Array.from(new Set(summaryArr.map((r) => r.file).filter(Boolean)));
 
-      const fileNames = rawFileNames.filter((name) => byFile.has(name));
+      // ✅ 업로드 순서 기준으로 "전체 파일"을 포함한다.
+      // interDocSummary에 row.file로 안 찍힌 문서도(=유사 0건 / otherFile로만 등장 등) 보고서에 포함
+      const fileNames = rawFileNames;
+
+      // 통계용: 요약 데이터가 실제로 존재하는 파일 수 / 없는 파일 수
+      const hasSummaryNames = rawFileNames.filter((name) => byFile.has(name));
+      const noSummaryNames = rawFileNames.filter((name) => !byFile.has(name));
+
       if (!fileNames.length) {
-        alert("요약 데이터는 있으나 파일명이 없습니다.");
+        alert("업로드된 파일이 없습니다.");
         return;
       }
 
@@ -4700,8 +4707,6 @@ const saveInterDedupReportPDF = async () => {
                 )
             );
 
-          if (!allRows.length) return;
-
           const sec = document.createElement("div");
           sec.style.margin = "0 0 8mm";
           sec.className = "summary-section";
@@ -4713,6 +4718,23 @@ const saveInterDedupReportPDF = async () => {
           h2.style.margin = "0 0 3mm";
           sec.appendChild(h2);
 
+          // ✅ 유사 데이터가 아예 없는 문서도 보고서에 포함
+          if (!allRows.length) {
+            const p = document.createElement("div");
+            p.style.fontSize = "10pt";
+            p.style.color = "#374151";
+            p.style.padding = "6px 8px";
+            p.style.border = "1px solid #e5e7eb";
+            p.style.borderRadius = "6px";
+            p.style.background = "#f9fafb";
+            p.textContent = "유사율 5% 이상 중복/유사 문서가 없습니다.";
+            sec.appendChild(p);
+
+            root.appendChild(sec);
+            return; // 다음 파일로
+          }
+
+          // ---- (여기부터는 기존 table 생성 로직 그대로 유지) ----
           const table = document.createElement("table");
           table.style.width = "100%";
           table.style.borderCollapse = "collapse";
@@ -4746,8 +4768,7 @@ const saveInterDedupReportPDF = async () => {
           let lowCount = 0;
 
           allRows.forEach((r) => {
-            const num =
-              typeof r.ratio === "number" ? Number(r.ratio) : null;
+            const num = typeof r.ratio === "number" ? Number(r.ratio) : null;
 
             if (num !== null && num < 5) {
               // 5% 미만은 개수만 집계 (전체 기준)

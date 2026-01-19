@@ -2415,8 +2415,17 @@ def _head_guard():
 # 2) CORS – 일단 전부 허용해서 CORS 에러 제거
 CORS(
     app,
-    resources={r"/*": {"origins": "*"}},
-    supports_credentials=True,
+    resources={
+        r"/*": {
+            "origins": [
+                "https://www.glefit.kr",
+                "https://glefit.kr",
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+            ]
+        }
+    },
+    supports_credentials=False,
 )
 
 # 3) 루트 & 헬스 — 단일 정의만 유지
@@ -4750,9 +4759,11 @@ def find_context_issues(text: str):
 
 
 # ============== (NEW) 도돌이표/유사 라우트 ==============
-@app.route("/dedup_intra", methods=["POST"])
+@app.route("/dedup_intra", methods=["POST", "OPTIONS"])
 @require_user
 def dedup_intra():
+    if request.method == "OPTIONS":
+        return "", 200
     """
     본문 한 건 내 도돌이표(정확히 같은 문장) + 유사 문장(3-gram 자카드) 탐지
     body: { "text": str, "min_len": 6, "sim_threshold": 0.85 }
@@ -4779,9 +4790,11 @@ def dedup_intra():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/dedup_inter", methods=["POST"])
+@app.route("/dedup_inter", methods=["POST", "OPTIONS"])
 @require_user
 def dedup_inter():
+    if request.method == "OPTIONS":
+        return "", 200
     """
     여러 파일 간 도돌이표/유사 문장 탐지
     body:
